@@ -1,0 +1,1155 @@
+---
+title: "Intermediate integration - regression summary"
+author: "Joe Oddy"
+lightbox: auto
+execute:
+  echo: false
+  warning: false
+  dev: "ragg_png"
+  cache: false
+format:
+  html:
+    theme: flatly
+    mermaid:
+      theme: neutral
+    page-layout: article
+    self-contained: true
+    code-line-numbers: true
+    code-block-bg: true
+    code-block-border-left: "#30BBF0"
+    code-copy: true
+    code-link: false
+    code-fold: true
+    code-tools:
+      source: true
+      toggle: false
+      caption: none
+    fig-align: center
+    fig-height: 5
+    fig-width: 8
+    fig-responsive: true
+    fig-dpi: 150
+    fig-cap-location: top
+    number-sections: true
+    number-depth: 2
+    toc: true
+    toc-depth: 3
+    dev: "ragg_png"
+    smooth-scroll: true
+    embed-resources: true
+---
+
+```{r}
+#| label: library-loading
+
+library(here)
+library(aqua)
+library(umap)
+library(mixOmics)
+library(conflicted)
+library(janitor)
+library(gt)
+library(ggrepel)
+library(feather)
+library(tidymodels)
+library(BiocParallel)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::rename)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::lag)
+conflicts_prefer(dplyr::desc)
+conflicts_prefer(aqua::rescale)
+conflicts_prefer(purrr::map)
+```
+
+```{r}
+#| label: sourcing-data-acquisition-script
+#| output: FALSE
+#| cache-lazy: FALSE
+
+source(here("01_scripts/data_acquisition.R"))
+
+# BPPARAM <- BiocParallel::SnowParam(workers = parallel::detectCores() - 1)
+
+# BPPARAM <- BiocParallel::SnowParam(workers = 2, type = "SOCK")
+# bpstart(BPPARAM)
+```
+
+```{r}
+#| label: scRNA-data-loading
+
+var_features <- setdiff(names(combined_run3_run4_variable_genes_union_df)[-c(1:47)],
+                              c("plasticell_sample_id", "label", "omics", "site"))
+
+scRNA_data_long <- combined_pseudobulk_df |>
+  select(label, omics, all_of(var_features)) |>
+  pivot_longer(
+    cols = all_of(var_features),
+    names_to = "gene",
+    values_to = "normalised_expression"
+  ) |>
+  group_by(gene) |>
+  mutate(scaled_expression = scale(normalised_expression)) |>
+  mutate(
+    vessel = as.numeric(str_extract(label, "(?<=v)\\d+")),
+    day = as.numeric(str_extract(label, "(?<=d)\\d+")),
+    run = as.numeric(str_extract(label, "(?<=r)\\d+"))
+  ) |>
+  relocate(run, vessel, day)
+
+scRNA_data_wide <- scRNA_data_long |>
+  select(-normalised_expression) |>
+  pivot_wider(
+    names_from = gene,
+    values_from = scaled_expression
+  )
+```
+
+```{r}
+#| label: lcms-data-loading
+
+lcms_data <- processed_lcms$both_runs_data_wide |>
+  mutate(omics = "lcms") |>
+  relocate(omics) |>
+  mutate(
+    run = as.numeric(run),
+    vessel = as.numeric(vessel)
+  )
+```
+
+```{r}
+#| label: olink-data-loading
+
+long_olink <- processed_olink$data |>
+  filter(!Timepoint == "Fresh Media") |>
+  filter(DF == "Neat") |>
+  select(label, omics, NPX, Assay, vessel, stream, Timepoint, DF) |>
+  filter(Assay %in% processed_olink$m_assays) |>
+  group_by(Assay) |>
+  mutate(scaled_NPX = scale(NPX)) |>
+  ungroup()
+
+wide_olink <- long_olink |>
+  select(-NPX) |>
+  pivot_wider(
+    names_from = Assay,
+    values_from = scaled_NPX,
+    values_fn = mean
+  ) |>
+  mutate(
+    day = as.numeric(str_remove(Timepoint, "Day ")),
+    vessel = as.numeric(str_remove(vessel, "V")),
+    run = 4
+  ) |>
+  relocate(run, day)
+```
+
+
+```{r}
+#| label: miRNA-data-loading
+
+miRNA_data <- processed_miRNA$processed_miRNA |>
+  mutate(omics = "miRNA") |>
+  relocate(omics) |>
+  mutate(
+    run = as.numeric(run),
+    vessel = as.numeric(vessel)
+  )
+
+processed_miRNA_long <- miRNA_data |>
+  pivot_longer(
+    cols = starts_with("ENS"),
+    names_to = "miRNA_name",
+    values_to = "deseq_normalised_and_vst_expression"
+  ) |>
+  group_by(miRNA_name) |>
+  mutate(scaled_expression = scale(deseq_normalised_and_vst_expression)) |>
+  ungroup()
+
+miRNA_data_scaled <- processed_miRNA_long |>
+  select(-deseq_normalised_and_vst_expression) |>
+  pivot_wider(
+    names_from = miRNA_name,
+    values_from = scaled_expression
+  )
+```
+
+```{r}
+#| label: process-data-loading
+
+process_data <- processed_process_data$all_process_data_unscaled_added_metrics
+```
+
+```{r}
+#| label: combining-data
+
+combined_data <- lcms_data |>
+  select(!c(omics, run:vessel)) |>
+  full_join(
+    miRNA_data_scaled |>
+      select(!c(omics, vessel:run)),
+    by = "label"
+  ) |>
+  full_join(
+    wide_olink |>
+      select(!c(run:day, omics:DF)),
+    by = "label"
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      select(!c(run, vessel, day, omics)),
+    by = "label"
+  )
+
+combined_metadata <- lcms_data |>
+  rename(lcms = "omics") |>
+  select(lcms:vessel) |>
+  full_join(
+    miRNA_data_scaled |>
+      rename(miRNA = "omics") |>
+      select(miRNA:run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    wide_olink |>
+      rename(olink = "omics") |>
+      select(run:DF),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      rename(scRNA = "omics") |>
+      select(scRNA, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  mutate(stage = case_when(
+    day >= 1 & day <= 3 ~ "mesoderm_commitment",
+    day >= 4 & day <= 6 ~ "hemogenic_endothelium",
+    day >= 8 & day <= 12 ~ "early_haem",
+    day >= 13 & day <= 15 ~ "late_haem",
+    day >= 19 & day <= 26 ~ "early_NK",
+    day >= 29 & day <= 36 ~ "late_NK",
+    TRUE ~ "undefined"
+  )) |>
+  mutate(stage = fct_relevel(
+    stage,
+    "mesoderm_commitment",
+    "hemogenic_endothelium",
+    "early_haem",
+    "late_haem",
+    "early_NK",
+    "late_NK"
+  )) |>
+  mutate(omics = paste(
+    ifelse(!is.na(lcms), lcms, ""),
+    ifelse(!is.na(miRNA), miRNA, ""),
+    ifelse(!is.na(olink), olink, ""),
+    ifelse(!is.na(scRNA), scRNA, ""),
+    sep = "+"
+  )) |>
+  mutate(omics = gsub("\\++", "+", omics)) |>
+  mutate(omics = gsub("^\\+|\\+$", "", omics))
+```
+
+```{r}
+#| label: mixomics-data-preparation-no-missing-data
+
+common_samples <- combined_data |>
+  drop_na() |>
+  select(label)
+
+lcms_matrix <- lcms_data |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:vessel) |>
+  as.matrix()
+
+miRNA_matrix <- miRNA_data_scaled |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:run) |>
+  as.matrix()
+
+olink_matrix <- wide_olink |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:DF) |>
+  as.matrix()
+
+scRNA_matrix <- scRNA_data_wide |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:omics) |>
+  as.matrix()
+
+multiomics_list <- list(
+  lcms = lcms_matrix,
+  miRNA = miRNA_matrix,
+  olink = olink_matrix,
+  scRNA = scRNA_matrix
+)
+
+stage <- combined_metadata |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  pull(stage)
+```
+
+```{r}
+#| label: combining-data-and-process-data
+
+combined_data_and_process <- lcms_data |>
+  select(!c(omics, run:vessel)) |>
+  full_join(
+    miRNA_data_scaled |>
+      select(!c(omics, vessel:run)),
+    by = "label"
+  ) |>
+  full_join(
+    wide_olink |>
+      select(!c(run:day, omics:DF)),
+    by = "label"
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      select(!c(run, vessel, day, omics)),
+    by = "label"
+  ) |>
+  full_join(
+    process_data |>
+      select(!c(run, vessel, day, omics)),
+    by = "label"
+  )
+
+combined_metadata_and_process <- lcms_data |>
+  rename(lcms = "omics") |>
+  select(lcms:vessel) |>
+  full_join(
+    miRNA_data_scaled |>
+      rename(miRNA = "omics") |>
+      select(miRNA:run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    wide_olink |>
+      rename(olink = "omics") |>
+      select(run:DF),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      rename(scRNA = "omics") |>
+      select(scRNA, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    process_data |>
+      rename(process = "omics") |>
+      select(process, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  mutate(stage = case_when(
+    day >= 1 & day <= 3 ~ "mesoderm_commitment",
+    day >= 4 & day <= 6 ~ "hemogenic_endothelium",
+    day >= 8 & day <= 12 ~ "early_haem",
+    day >= 13 & day <= 15 ~ "late_haem",
+    day >= 19 & day <= 26 ~ "early_NK",
+    day >= 29 & day <= 36 ~ "late_NK",
+    TRUE ~ "undefined"
+  )) |>
+  mutate(stage = fct_relevel(
+    stage,
+    "mesoderm_commitment",
+    "hemogenic_endothelium",
+    "early_haem",
+    "late_haem",
+    "early_NK",
+    "late_NK"
+  )) |>
+  mutate(omics = paste(
+    ifelse(!is.na(lcms), lcms, ""),
+    ifelse(!is.na(miRNA), miRNA, ""),
+    ifelse(!is.na(olink), olink, ""),
+    ifelse(!is.na(scRNA), scRNA, ""),
+    ifelse(!is.na(process), process, ""),
+    sep = "+"
+  )) |>
+  mutate(omics = gsub("\\++", "+", omics)) |>
+  mutate(omics = gsub("^\\+|\\+$", "", omics))
+```
+
+```{r}
+#| label: mixomics-data-preparation-with-missing-data
+#| cache-lazy: false
+
+summary_metric_samples <- combined_data_and_process |>
+  filter(!is.na(cancer_cells_killed_per_PSC)) |>
+  select(label)
+
+lcms_matrix_process <- lcms_data |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:vessel) |>
+  as.matrix()
+
+miRNA_matrix_process <- miRNA_data_scaled |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:run) |>
+  as.matrix()
+
+olink_matrix_process <- wide_olink |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:DF) |>
+  as.matrix()
+
+scRNA_matrix_process <- scRNA_data_wide |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:omics) |>
+  as.matrix()
+
+multiomics_list_process <- list(
+  lcms = lcms_matrix_process,
+  miRNA = miRNA_matrix_process,
+  olink = olink_matrix_process,
+  scRNA = scRNA_matrix_process
+)
+
+summary_metric <- process_data |>
+  filter(label %in% summary_metric_samples$label) |>
+  arrange(label) |>
+  select(cancer_cells_killed_per_PSC, label) |>
+  column_to_rownames("label") |>
+  as.matrix()
+```
+
+```{r}
+#| label: loading-nk-cell-proportion-data
+
+nk_cells_proportions <- read.csv(here("00_data/nk_cell_proportions_run_4.csv")) |>
+  mutate(
+    vessel_day = as.character(vessel_day),
+    vessel = as.numeric(sub("V(\\d+)_D\\d+", "\\1", vessel_day)),
+    day = as.numeric(sub("V\\d+_D(\\d+)", "\\1", vessel_day)),
+    label = paste0("r4_v", vessel, "_d", day)
+  )
+
+nk_cells_proportions_subset <- nk_cells_proportions |>
+  filter(label %in% common_samples$label) |>
+  arrange(label)
+
+nk_cells_target <- nk_cells_proportions_subset |>
+  column_to_rownames("label") |>
+  select(proportion_NK) |>
+  as.matrix()
+```
+
+```{r}
+#| label: nk-proportions-conversion-to-categorical
+
+nk_cells_proportions_category_data <- nk_cells_proportions |>
+  mutate(proportion_NK_category = case_when(
+    proportion_NK <= 0.25 ~ "< 25% NKs",
+    proportion_NK > 0.25 & proportion_NK <= 0.5 ~ "25 - 50% NKs",
+    proportion_NK > 0.5 & proportion_NK <= 0.75 ~ "50 - 75% NKs",
+    proportion_NK > 0.75 & proportion_NK <= 1 ~ "> 75% NKs",
+  )) |>
+  mutate(proportion_NK_category = fct_relevel(
+    proportion_NK_category,
+    "< 25% NKs",
+    "25 - 50% NKs",
+    "50 - 75% NKs",
+    "> 75% NKs"
+  )) |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  select(-X)
+
+nk_cells_proportions_category <- nk_cells_proportions_category_data |>
+  column_to_rownames("label") |>
+  pull(proportion_NK_category)
+```
+
+```{r}
+#| label: train-test-split
+
+set.seed(89)
+
+nk_cells_proportions_category_data_split <- nk_cells_proportions_category_data |>
+  as.data.frame() |> 
+  column_to_rownames("label") |> 
+  initial_split(
+    prop = 0.66,
+    strata = proportion_NK_category
+  )
+
+nk_cells_proportions_category_train <- 
+  nk_cells_proportions_category_data[nk_cells_proportions_category_data_split$in_id, ] |> 
+  remove_rownames() |> 
+  column_to_rownames("label") |>
+  pull(proportion_NK_category)
+
+nk_cells_proportions_category_test <- 
+  nk_cells_proportions_category_data[-nk_cells_proportions_category_data_split$in_id, ] |> 
+  remove_rownames() |> 
+  column_to_rownames("label") |>
+  pull(proportion_NK_category)
+
+nk_cells_proportions_train <- 
+  nk_cells_proportions_category_data[nk_cells_proportions_category_data_split$in_id, ] |> 
+  remove_rownames() |> 
+  column_to_rownames("label") |>
+  select(proportion_NK) |>
+  as.matrix()
+
+nk_cells_proportions_test <- 
+  nk_cells_proportions_category_data[-nk_cells_proportions_category_data_split$in_id, ] |> 
+  remove_rownames() |> 
+  column_to_rownames("label") |>
+  select(proportion_NK) |>
+  as.matrix()
+
+multiomics_list_train <- multiomics_list |>
+  map(~ .x[nk_cells_proportions_category_data_split$in_id, ])
+
+multiomics_list_test <- multiomics_list |>
+  map(~ .x[-nk_cells_proportions_category_data_split$in_id, ])
+```
+
+```{r}
+table(nk_cells_proportions_category_train, useNA = "ifany")
+```
+
+```{r}
+table(nk_cells_proportions_category_test, useNA = "ifany")
+```
+
+# Background
+
+This quarto notebook contains a condensed version of the intermediate integration analysis (specifically the regression analysis) used for the Plasticell project.
+
+## Data processing
+
+Data loading and processing is mostly handled by the data_acquisition.R script. Some further data processing occurs in this report (e.g. scaling, selection of only variable scRNA genes, filtering of Olink data).
+
+# Pairwise sPLS models
+
+In the first step, pairwise sparse PLS models are fit between each modality to explore the relationships between them. In these models, we use one modality to explain another and vice versa. The mode for spls is set to canonical: 
+
+"Canonical (mode = "canonical"): X and Y play symmetric roles. While not mathematically equivalent, the method is quite similar to CCA. It is appropriate to use when there is no a priori relationship between X and Y and as a replacement for CCA in very high dimensional contexts (when variables selection is desired). Y is deflated using information from Y."
+
+Correlations between the latent components are generally high (>0.8). This information can be used to inform the design matrix used for the full DIABLO model.
+
+```{r}
+#| label: pairwise-pls-models
+
+# generate pairwise PLS models
+pls1 <- spls(multiomics_list[["miRNA"]], multiomics_list[["scRNA"]], scale = FALSE, mode = "canonical")
+pls2 <- spls(multiomics_list[["miRNA"]], multiomics_list[["lcms"]], scale = FALSE, mode = "canonical")
+pls3 <- spls(multiomics_list[["miRNA"]], multiomics_list[["olink"]], scale = FALSE, mode = "canonical")
+pls4 <- spls(multiomics_list[["scRNA"]], multiomics_list[["lcms"]], scale = FALSE, mode = "canonical")
+pls5 <- spls(multiomics_list[["scRNA"]], multiomics_list[["olink"]], scale = FALSE, mode = "canonical")
+pls6 <- spls(multiomics_list[["lcms"]], multiomics_list[["olink"]], scale = FALSE, mode = "canonical")
+```
+
+::: {.panel-tabset}
+#### Overall correlations - fig
+```{r}
+#| label: correlations-between-omics
+
+pls1_correlations <- cor(pls1$variates$X, pls1$variates$Y) |>
+  as.data.frame() |>
+  rownames_to_column("var1") |>
+  pivot_longer(
+    names_to = "var2",
+    cols = -var1
+  ) |>
+  mutate(
+    var1 = paste("miRNA_", var1),
+    var2 = paste("scRNA_", var2)
+  )
+
+pls2_correlations <- cor(pls2$variates$X, pls2$variates$Y) |>
+  as.data.frame() |>
+  rownames_to_column("var1") |>
+  pivot_longer(
+    names_to = "var2",
+    cols = -var1
+  ) |>
+  mutate(
+    var1 = paste("miRNA_", var1),
+    var2 = paste("lcms_", var2)
+  )
+
+pls3_correlations <- cor(pls3$variates$X, pls3$variates$Y) |>
+  as.data.frame() |>
+  rownames_to_column("var1") |>
+  pivot_longer(
+    names_to = "var2",
+    cols = -var1
+  ) |>
+  mutate(
+    var1 = paste("miRNA_", var1),
+    var2 = paste("olink_", var2)
+  )
+
+pls4_correlations <- cor(pls4$variates$X, pls4$variates$Y) |>
+  as.data.frame() |>
+  rownames_to_column("var1") |>
+  pivot_longer(
+    names_to = "var2",
+    cols = -var1
+  ) |>
+  mutate(
+    var1 = paste("scRNA_", var1),
+    var2 = paste("lcms_", var2)
+  )
+
+pls5_correlations <- cor(pls5$variates$X, pls5$variates$Y) |>
+  as.data.frame() |>
+  rownames_to_column("var1") |>
+  pivot_longer(
+    names_to = "var2",
+    cols = -var1
+  ) |>
+  mutate(
+    var1 = paste("scRNA_", var1),
+    var2 = paste("olink_", var2)
+  )
+
+pls6_correlations <- cor(pls6$variates$X, pls6$variates$Y) |>
+  as.data.frame() |>
+  rownames_to_column("var1") |>
+  pivot_longer(
+    names_to = "var2",
+    cols = -var1
+  ) |>
+  mutate(
+    var1 = paste("lcms_", var1),
+    var2 = paste("olink_", var2)
+  )
+
+all_pairwise_correlations <- bind_rows(
+  pls1_correlations, pls2_correlations,
+  pls3_correlations, pls4_correlations,
+  pls5_correlations, pls6_correlations
+)
+```
+
+```{r}
+#| label: fig-pairwise-correlations
+#| fig-height: 10
+#| fig-width: 8
+
+ggplot(
+  all_pairwise_correlations |>
+    mutate(comparison = paste(var1, var2, sep = "_")),
+  aes(
+    x = reorder(comparison, value),
+    y = value
+  )
+) +
+  geom_col() +
+  theme_catapult() +
+  coord_flip()
+```
+
+#### Overall correlations - table
+```{r}
+#| label: tbl-pairwise-spls-correlations
+
+all_pairwise_correlations |>
+  arrange(-value) |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Pairwise correlations")
+  )
+```
+:::
+
+### Design
+
+A model with an arbitrarily high number of components is initially built. The performance of this model with different number of components can then be evaluated to select the optimal distance metric and number of components.
+
+This initial model includes the following:
+
+* Design matrix specifying correlations of 0.8 between modalities.
+
+* The other hyperparameters (number of components and number of features from each omics) were taken from the tuning of the block.splsda model, since the same tuning cannot be implemented on the regression version of the model.
+
+```{r}
+#| label: mixomics-splsda-initial-model
+#| output: FALSE
+
+diff_splsda_design <- matrix(0.8,
+  ncol = length(multiomics_list_train), nrow = length(multiomics_list_train),
+  dimnames = list(names(multiomics_list_train), names(multiomics_list_train))
+)
+
+diag(diff_splsda_design) <- 0
+```
+
+```{r}
+list_keepX_proportion_NK <- list(
+  lcms = c(5, 15, 5),
+  miRNA = c(5, 5, 5),
+  olink = c(15, 15, 5),
+  scRNA = c(5, 25, 5)
+)
+```
+
+# Block sPLS for NK cell proportions
+
+The block sPLS model implemented here does not have built-in capacity for tuning of the hyperparameters or assessment of model accuracy. Consequently, I used a block sPLS-DA model to select appropriate hyperparameters (ncomp and number of features to keep in each block), because these classification models do have tuning and performance assessment functions. For classification purposes, the NK_proportion data was encoded into four classes: < 25% NK, 25 - 50% NK, 50 - 75% NK, and > 75% NK. From this, the optimal number of components was 3 (based on mahalanobis distance) and the optimal number of features from each block to keep in each component are shown below in @tbl-number-of-retained-features-proportion-NK.
+
+```{r}
+#| label: tbl-number-of-retained-features-proportion-NK
+
+list_keepX_proportion_NK |>
+  as.data.frame() |>
+  t() |>
+  as.data.frame() |>
+  rownames_to_column("modality") |>
+  as_tibble() |>
+  rename(
+    comp1 = V1,
+    comp2 = V2
+  ) |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Features retained from each modality")
+  )
+```
+
+```{r}
+#| label: setting-proportion-model
+#| output: false
+
+proportion_spls_model <- block.spls(
+  X = multiomics_list_train, Y = nk_cells_proportions_train, ncomp = 3,
+  keepX = list_keepX_proportion_NK, design = diff_splsda_design,
+  near.zero.var = TRUE, scale = FALSE
+)
+```
+
+::: {.panel-tabset}
+#### Features from each omic
+```{r}
+#| label: tbl-extracting-features-proportion-model
+
+# the features selected to form the first component
+proportion_model_miRNA_features_comp1 <- selectVar(proportion_spls_model, block = "miRNA", comp = 1)$miRNA$name |>
+  as_tibble() |>
+  mutate(
+    component = 1,
+    omics = "miRNA"
+  )
+
+proportion_model_miRNA_features_comp2 <- selectVar(proportion_spls_model, block = "miRNA", comp = 2)$miRNA$name |>
+  as_tibble() |>
+  mutate(
+    component = 2,
+    omics = "miRNA"
+  )
+
+proportion_model_scRNA_features_comp1 <- selectVar(proportion_spls_model, block = "scRNA", comp = 1)$scRNA$name |>
+  as_tibble() |>
+  mutate(
+    component = 1,
+    omics = "scRNA"
+  )
+proportion_model_scRNA_features_comp2 <- selectVar(proportion_spls_model, block = "scRNA", comp = 2)$scRNA$name |>
+  as_tibble() |>
+  mutate(
+    component = 2,
+    omics = "scRNA"
+  )
+
+proportion_model_olink_features_comp1 <- selectVar(proportion_spls_model, block = "olink", comp = 1)$olink$name |>
+  as_tibble() |>
+  mutate(
+    component = 1,
+    omics = "olink"
+  )
+
+proportion_model_olink_features_comp2 <- selectVar(proportion_spls_model, block = "olink", comp = 2)$olink$name |>
+  as_tibble() |>
+  mutate(
+    component = 2,
+    omics = "olink"
+  )
+
+proportion_model_lcms_features_comp1 <- selectVar(proportion_spls_model, block = "lcms", comp = 1)$lcms$name |>
+  as_tibble() |>
+  mutate(
+    component = 1,
+    omics = "lcms"
+  )
+
+proportion_model_lcms_features_comp2 <- selectVar(proportion_spls_model, block = "lcms", comp = 2)$lcms$name |>
+  as_tibble() |>
+  mutate(
+    component = 2,
+    omics = "lcms"
+  )
+
+proportion_model_all_features <- bind_rows(
+  proportion_model_miRNA_features_comp1, proportion_model_miRNA_features_comp2,
+  proportion_model_scRNA_features_comp1, proportion_model_scRNA_features_comp2,
+  proportion_model_olink_features_comp1, proportion_model_olink_features_comp2,
+  proportion_model_lcms_features_comp1, proportion_model_lcms_features_comp2
+)
+
+proportion_model_all_features |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Features retained from each modality for comps 1 and 2")
+  )
+```
+
+#### Variable plot
+```{r}
+#| label: fig-proportion-variables
+
+plotVar(proportion_spls_model,
+  var.names = FALSE,
+  style = "graphics", legend = TRUE, overlap = FALSE
+)
+```
+
+#### Loadings
+```{r}
+#| label: fig-proportion-loadings
+
+plotLoadings(proportion_spls_model, comp = 1, contrib = "max", method = "median")
+```
+
+```{r}
+#| label: get-loadings-nk-cell-spls
+
+lcms_proportion_model_loadings <- proportion_spls_model[["loadings"]][["lcms"]] |>
+  as.data.frame() |>
+  rownames_to_column("feature") |>
+  mutate(omics = "lcms")
+
+miRNA_proportion_model_loadings <- proportion_spls_model[["loadings"]][["miRNA"]] |>
+  as.data.frame() |>
+  rownames_to_column("feature") |>
+  mutate(omics = "miRNA")
+
+olink_proportion_model_loadings <- proportion_spls_model[["loadings"]][["olink"]] |>
+  as.data.frame() |>
+  rownames_to_column("feature") |>
+  mutate(omics = "olink")
+
+scRNA_proportion_model_loadings <- proportion_spls_model[["loadings"]][["scRNA"]] |>
+  as.data.frame() |>
+  rownames_to_column("feature") |>
+  mutate(omics = "scRNA")
+
+proportion_model_loadings <- bind_rows(
+  lcms_proportion_model_loadings,
+  miRNA_proportion_model_loadings,
+  olink_proportion_model_loadings,
+  scRNA_proportion_model_loadings
+) |>
+  mutate(feature_omics = paste(feature, omics, sep = "_"))
+```
+
+```{r}
+#| fig-height: 8
+
+ggplot(
+  proportion_model_loadings |>
+    group_by(omics) |>
+    slice_max(abs(comp1), n = 5),
+  # arrange by comp1 value
+  aes(x = reorder(feature, abs(comp1)), y = comp1)
+) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~omics, scales = "free") +
+  theme_catapult()
+```
+
+```{r}
+intermediate_integration_features <- proportion_model_loadings |> 
+  filter(comp1 != 0 | comp2 != 0 | comp3 != 0)
+
+if(!file.exists(here("00_data/intermediate_integration_features.rds"))){
+  write_rds(intermediate_integration_features, here("00_data/intermediate_integration_features.rds"))
+}
+```
+
+:::
+
+### Final model - samples
+
+::: {.panel-tabset}
+#### Separate blocks PLS
+```{r}
+#| label: fig-mixomics-samples-proportion-model
+#| fig-height: 6
+
+plotIndiv(proportion_spls_model)
+```
+
+#### Combined PLS
+```{r}
+#| label: fig-proportion-combined-pls
+#| fig-height: 6
+
+# plot the samples using an arrow plot
+plotArrow(proportion_spls_model,
+  ind.names = FALSE, # reduce visual clutter
+  legend = TRUE,
+  title = "sPLS comp 1 - 2"
+)
+```
+:::
+
+### Explained variance
+
+```{r}
+proportion_spls_model_explained_variance <- proportion_spls_model$prop_expl_var |>
+  as.data.frame() |> 
+  rownames_to_column("component")
+```
+
+```{r}
+pred <- predict(proportion_spls_model, newdata = multiomics_list_test)
+```
+
+```{r}
+# Predicted NK proportions using 1 component
+y_pred_comp1 <- pred$AveragedPredict[, 1, 1]
+
+# Using 2 components
+y_pred_comp2 <- pred$AveragedPredict[, 1, 2]
+
+# Using 3 components
+y_pred_comp3 <- pred$AveragedPredict[, 1, 3]
+
+Y_test <- nk_cells_proportions_test
+```
+
+```{r}
+# R-squared for 1 component
+cor(y_pred_comp1, Y_test)^2
+
+# RMSE
+sqrt(mean((y_pred_comp1 - Y_test)^2))
+
+# MAE (optional)
+mean(abs(y_pred_comp1 - Y_test))
+```
+
+```{r}
+# Extract predictions from the last component (i.e., using all 3 components)
+y_pred_all <- pred$AveragedPredict[, 1, 3]
+
+# R-squared
+R2_all <- cor(y_pred_all, nk_cells_proportions_test)^2
+```
+
+```{r}
+df_plot <- data.frame(
+  Actual = nk_cells_proportions_test,
+  Predicted = y_pred_all
+)
+
+ggplot(df_plot, aes(x = proportion_NK, y = Predicted)) +
+  geom_point() +
+  labs(
+    title = "Predicted vs Actual NK Proportions",
+    x = "Actual NK Proportions",
+    y = "Predicted NK Proportions"
+  ) +
+  theme_catapult()
+```
+
+# Implementing nested cross-validation approach
+
+The issue with not being able to tune hyperparameters (ncomp and keepX) for a block.spls model in mixomics is limiting, so maybe explore implementing our own version here.
+
+I attempted to add the block.spls model as a parsnip model, so that it could be used in a tidymodels framework and allow for tuning. However, it can't be added due to the input data type. The block.spls function takes a list of matrices (from each omics layer) as input, whereas the tidymodels framework requires a single tibble/matrix/dataframe as input. 
+
+Therefore we should just use the block.spls function as used in mixomics and perhaps loop over the cross-validation sets instead.
+
+```{r}
+#| label: train-test-split-cv
+
+set.seed(89)
+
+cv_data_split <- nk_cells_proportions_category_data |>
+  as.data.frame() |> 
+  column_to_rownames("label") |> 
+  vfold_cv(
+    strata = proportion_NK_category,
+    v = 5,
+    repeats = 10
+  )
+```
+
+```{r}
+#| label: nested-cross-validation-setup
+
+# loop over my train-test splits to perform the analysis I did above for getting performance metrics
+
+results <- list()
+
+for (i in seq_along(cv_data_split$splits)) {
+  
+  train_data_ids <- analysis(cv_data_split$splits[[i]]) |> 
+    rownames_to_column("label") |> 
+    pull(label)
+  
+  test_data_ids <- assessment(cv_data_split$splits[[i]]) |> 
+    rownames_to_column("label") |> 
+    pull(label)
+  
+  target_train <- nk_cells_proportions_category_data |>
+    filter(label %in% train_data_ids) |>
+    column_to_rownames("label") |>
+    select(proportion_NK) |>
+    as.matrix()
+
+  target_test <- nk_cells_proportions_category_data |>
+    filter(label %in% test_data_ids) |>
+    column_to_rownames("label") |>
+    select(proportion_NK) |>
+    as.matrix()
+  
+  predictors_train <- multiomics_list |>
+    map(~ .x[train_data_ids, , drop = FALSE])
+
+  predictors_test <- multiomics_list |>
+    map(~ .x[test_data_ids, , drop = FALSE])
+  
+  # Fit the model on the training set
+  proportion_spls_model <- block.spls(
+    X = predictors_train, Y = target_train, ncomp = 3,
+    keepX = list_keepX_proportion_NK, design = diff_splsda_design,
+    near.zero.var = TRUE, scale = FALSE
+  )
+  
+  # Predict on the test set
+  pred <- predict(proportion_spls_model, newdata = predictors_test)
+  
+  # Calculate performance metrics
+  y_pred_all <- pred$AveragedPredict[, 1, 3]
+  R2_all <- cor(y_pred_all, target_test)^2
+  
+  # Store the results (e.g., in a list or data frame)
+  results[[i]] <- list(
+    R2 = R2_all,
+    predictions = y_pred_all,
+    actuals = target_test
+  )
+  # You can also calculate other metrics like RMSE, MAE, etc.
+  rmse <- sqrt(mean((y_pred_all - target_test)^2))
+  mae <- mean(abs(y_pred_all - target_test))
+  # Store these metrics as well
+  results[[i]]$rmse <- rmse
+  results[[i]]$mae <- mae
+}
+
+```
+
+```{r}
+#| label: nested-cross-validation-results
+
+results_df <- bind_rows(lapply(results, function(x) {
+  data.frame(
+    R_squared = x$`R2`,
+    RMSE = x$rmse,
+    MAE = x$mae
+  )
+}))
+
+results_df |>
+  summarise(
+    mean_R2 = mean(proportion_NK),
+    sd_R2 = sd(proportion_NK),
+    mean_RMSE = mean(RMSE),
+    sd_RMSE = sd(RMSE),
+    mean_MAE = mean(MAE),
+    sd_MAE = sd(MAE)
+  )
+```
+
+```{r}
+#| label: fig-cv-accuracy
+#| fig-height: 6
+#| fig-width: 8
+
+results_df_long <- results_df |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "metric",
+    values_to = "value"
+  )
+
+ggplot(results_df_long, aes(x = metric, y = value)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2) +
+  facet_wrap(~metric, scales = "free") +
+  labs(
+    title = "Distribution of R-squared values from Nested Cross-Validation",
+    x = "R-squared",
+    y = "Frequency"
+  ) +
+  theme_catapult()
+```
+
+
+

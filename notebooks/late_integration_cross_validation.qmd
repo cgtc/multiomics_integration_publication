@@ -1,0 +1,1124 @@
+---
+title: "Late integration modelling"
+author: "Joseph Oddy"
+format: html
+editor: visual
+---
+
+# Introduction
+
+I have adapted Chris' late integration modelling here to implement similar model assessment as I performed for early and intermediate integration (repeated nested cross-validation).
+
+```{r}
+#| label: library-loading
+
+library(tidyverse)
+library(here)
+library(aqua)
+library(umap)
+library(mixOmics)
+# mixKernel has quite a few dependencies, see mixKernel installation guide
+library(mixKernel)
+library(conflicted)
+library(janitor)
+library(gt)
+library(ggrepel)
+library(kernlab)
+library(feather)
+library(UpSetR)
+library(ComplexUpset)
+library(arrow)
+library(patchwork)
+library(tidymodels)
+library(CGTCanalyse)
+library(vip)
+library(rlang)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::rename)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::lag)
+conflicts_prefer(dplyr::desc)
+conflicts_prefer(aqua::rescale)
+conflicts_prefer(ComplexUpset::upset)
+conflicts_prefer(vip::vip)
+conflicted::conflicts_prefer(purrr::map)
+conflicted::conflicts_prefer(tidyr::expand)
+
+#load(here("00_data/early_integration_NK_percentage_modelling_environment.RData"))
+```
+
+```{r}
+#| label: sourcing-data-acquisition-script
+#| output: FALSE
+#| cache-lazy: FALSE
+
+source(here("01_scripts/data_acquisition.R"))
+
+BPPARAM <- BiocParallel::SnowParam(workers = parallel::detectCores() - 1)
+```
+
+```{r}
+#| label: scRNA-data-loading
+
+var_features <- setdiff(names(combined_run3_run4_variable_genes_union_df)[-c(1:47)],
+                              c("plasticell_sample_id", "label", "omics", "site"))
+
+scRNA_data_long <- combined_pseudobulk_df |>
+  select(label, omics, all_of(var_features)) |>
+  pivot_longer(
+    cols = all_of(var_features),
+    names_to = "gene",
+    values_to = "normalised_expression"
+  ) |>
+  group_by(gene) |>
+  mutate(scaled_expression = scale(normalised_expression)) |>
+  mutate(
+    vessel = as.numeric(str_extract(label, "(?<=v)\\d+")),
+    day = as.numeric(str_extract(label, "(?<=d)\\d+")),
+    run = as.numeric(str_extract(label, "(?<=r)\\d+"))
+  ) |>
+  relocate(run, vessel, day)
+
+scRNA_data_wide <- scRNA_data_long |>
+  select(-normalised_expression) |>
+  pivot_wider(
+    names_from = gene,
+    values_from = scaled_expression
+  )
+```
+
+```{r}
+#| label: lcms-data-loading
+
+lcms_data <- processed_lcms$both_runs_data_wide |>
+  mutate(omics = "lcms") |>
+  relocate(omics) |>
+  mutate(
+    run = as.numeric(run),
+    vessel = as.numeric(vessel)
+  )
+```
+
+```{r}
+#| label: olink-data-loading
+
+long_olink <- processed_olink$data |>
+  filter(!Timepoint == "Fresh Media") |>
+  filter(DF == "Neat") |>
+  select(label, omics, NPX, Assay, vessel, stream, Timepoint, DF) |>
+  filter(Assay %in% processed_olink$m_assays) |>
+  group_by(Assay) |>
+  mutate(scaled_NPX = scale(NPX)) |>
+  ungroup()
+
+wide_olink <- long_olink |>
+  select(-NPX) |>
+  pivot_wider(
+    names_from = Assay,
+    values_from = scaled_NPX,
+    values_fn = mean
+  ) |>
+  mutate(
+    day = as.numeric(str_remove(Timepoint, "Day ")),
+    vessel = as.numeric(str_remove(vessel, "V")),
+    run = 4
+  ) |>
+  relocate(run, day)
+```
+
+```{r}
+#| label: miRNA-data-loading
+
+miRNA_data <- processed_miRNA$processed_miRNA |>
+  mutate(omics = "miRNA") |>
+  relocate(omics) |>
+  mutate(
+    run = as.numeric(run),
+    vessel = as.numeric(vessel)
+  )
+
+processed_miRNA_long <- miRNA_data |>
+  pivot_longer(
+    cols = starts_with("ENS"),
+    names_to = "miRNA_name",
+    values_to = "deseq_normalised_and_vst_expression"
+  ) |>
+  group_by(miRNA_name) |>
+  mutate(scaled_expression = scale(deseq_normalised_and_vst_expression)) |>
+  ungroup()
+
+miRNA_data_scaled <- processed_miRNA_long |>
+  select(-deseq_normalised_and_vst_expression) |>
+  pivot_wider(
+    names_from = miRNA_name,
+    values_from = scaled_expression
+  )
+```
+
+```{r}
+#| label: process-data-loading
+
+process_data <- processed_process_data$all_process_data_unscaled_added_metrics
+```
+
+```{r}
+#| label: combining-data
+
+combined_data <- lcms_data |>
+  select(!c(omics, run:vessel)) |>
+  full_join(
+    miRNA_data_scaled |>
+      select(!c(omics, vessel:run)),
+    by = "label", suffix = c("_lcms", "_miRNA")
+  ) |>
+  full_join(
+    wide_olink |>
+      select(!c(run:day, omics:DF)),
+    by = "label", suffix = c("_miRNA", "_olink")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      select(!c(run, vessel, day, omics)),
+    by = "label", suffix = c("_olink", "_scRNA")
+  )
+
+combined_data_names <- names(combined_data) |> 
+  as_tibble()
+
+combined_metadata <- lcms_data |>
+  rename(lcms = "omics") |>
+  select(lcms:vessel) |>
+  full_join(
+    miRNA_data_scaled |>
+      rename(miRNA = "omics") |>
+      select(miRNA:run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    wide_olink |>
+      rename(olink = "omics") |>
+      select(run:DF),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      rename(scRNA = "omics") |>
+      select(scRNA, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  mutate(stage = case_when(
+    day >= 1 & day <= 3 ~ "mesoderm_commitment",
+    day >= 4 & day <= 6 ~ "hemogenic_endothelium",
+    day >= 8 & day <= 12 ~ "early_haem",
+    day >= 13 & day <= 15 ~ "late_haem",
+    day >= 19 & day <= 26 ~ "early_NK",
+    day >= 29 & day <= 36 ~ "late_NK",
+    TRUE ~ "undefined"
+  )) |>
+  mutate(stage = fct_relevel(
+    stage,
+    "mesoderm_commitment",
+    "hemogenic_endothelium",
+    "early_haem",
+    "late_haem",
+    "early_NK",
+    "late_NK"
+  )) |>
+  mutate(omics = paste(
+    ifelse(!is.na(lcms), lcms, ""),
+    ifelse(!is.na(miRNA), miRNA, ""),
+    ifelse(!is.na(olink), olink, ""),
+    ifelse(!is.na(scRNA), scRNA, ""),
+    sep = "+"
+  )) |>
+  mutate(omics = gsub("\\++", "+", omics)) |>
+  mutate(omics = gsub("^\\+|\\+$", "", omics))
+```
+
+```{r}
+#| label: mixomics-data-preparation-no-missing-data
+
+common_samples <- combined_data |>
+  drop_na() |>
+  select(label)
+
+lcms_matrix <- lcms_data |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:vessel) |>
+  as.matrix()
+
+miRNA_matrix <- miRNA_data_scaled |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:run) |>
+  as.matrix()
+
+olink_matrix <- wide_olink |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:DF) |>
+  as.matrix()
+
+scRNA_matrix <- scRNA_data_wide |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:omics) |>
+  as.matrix()
+
+multiomics_list <- list(
+  lcms = lcms_matrix,
+  miRNA = miRNA_matrix,
+  olink = olink_matrix,
+  scRNA = scRNA_matrix
+)
+
+stage <- combined_metadata |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  pull(stage)
+```
+
+```{r}
+#| label: combining-data-and-process-data
+
+combined_data_and_process <- lcms_data |>
+  select(!c(omics, run:vessel)) |>
+  full_join(
+    miRNA_data_scaled |>
+      select(!c(omics, vessel:run)),
+    by = "label"
+  ) |>
+  full_join(
+    wide_olink |>
+      select(!c(run:day, omics:DF)),
+    by = "label"
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      select(!c(run, vessel, day, omics)),
+    by = "label"
+  ) |>
+  full_join(
+    process_data |>
+      select(!c(run, vessel, day, omics)),
+    by = "label"
+  )
+
+combined_metadata_and_process <- lcms_data |>
+  rename(lcms = "omics") |>
+  select(lcms:vessel) |>
+  full_join(
+    miRNA_data_scaled |>
+      rename(miRNA = "omics") |>
+      select(miRNA:run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    wide_olink |>
+      rename(olink = "omics") |>
+      select(run:DF),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      rename(scRNA = "omics") |>
+      select(scRNA, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    process_data |>
+      rename(process = "omics") |>
+      select(process, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  mutate(stage = case_when(
+    day >= 1 & day <= 3 ~ "mesoderm_commitment",
+    day >= 4 & day <= 6 ~ "hemogenic_endothelium",
+    day >= 8 & day <= 12 ~ "early_haem",
+    day >= 13 & day <= 15 ~ "late_haem",
+    day >= 19 & day <= 26 ~ "early_NK",
+    day >= 29 & day <= 36 ~ "late_NK",
+    TRUE ~ "undefined"
+  )) |>
+  mutate(stage = fct_relevel(
+    stage,
+    "mesoderm_commitment",
+    "hemogenic_endothelium",
+    "early_haem",
+    "late_haem",
+    "early_NK",
+    "late_NK"
+  )) |>
+  mutate(omics = paste(
+    ifelse(!is.na(lcms), lcms, ""),
+    ifelse(!is.na(miRNA), miRNA, ""),
+    ifelse(!is.na(olink), olink, ""),
+    ifelse(!is.na(scRNA), scRNA, ""),
+    ifelse(!is.na(process), process, ""),
+    sep = "+"
+  )) |>
+  mutate(omics = gsub("\\++", "+", omics)) |>
+  mutate(omics = gsub("^\\+|\\+$", "", omics))
+```
+
+```{r}
+#| label: mixomics-data-preparation-with-missing-data
+#| cache-lazy: false
+
+summary_metric_samples <- combined_data_and_process |>
+  filter(!is.na(cancer_cells_killed_per_PSC)) |>
+  select(label)
+
+lcms_matrix_process <- lcms_data |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:vessel) |>
+  as.matrix()
+
+miRNA_matrix_process <- miRNA_data_scaled |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:run) |>
+  as.matrix()
+
+olink_matrix_process <- wide_olink |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:DF) |>
+  as.matrix()
+
+scRNA_matrix_process <- scRNA_data_wide |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:omics) |>
+  as.matrix()
+
+multiomics_list_process <- list(
+  lcms = lcms_matrix_process,
+  miRNA = miRNA_matrix_process,
+  olink = olink_matrix_process,
+  scRNA = scRNA_matrix_process
+)
+
+summary_metric <- process_data |>
+  filter(label %in% summary_metric_samples$label) |>
+  arrange(label) |>
+  select(cancer_cells_killed_per_PSC, label) |>
+  column_to_rownames("label") |>
+  as.matrix()
+```
+
+```{r}
+#| label: loading-nk-cell-proportion-data
+
+nk_cells_proportions <- read.csv(here("00_data/nk_cell_proportions_run_4.csv")) |>
+  mutate(
+    vessel_day = as.character(vessel_day),
+    vessel = as.numeric(sub("V(\\d+)_D\\d+", "\\1", vessel_day)),
+    day = as.numeric(sub("V\\d+_D(\\d+)", "\\1", vessel_day)),
+    label = paste0("r4_v", vessel, "_d", day)
+  )
+
+nk_cells_proportions_subset <- nk_cells_proportions |>
+  filter(label %in% common_samples$label) |>
+  arrange(label)
+
+nk_cells_target <- nk_cells_proportions_subset |>
+  column_to_rownames("label") |>
+  select(proportion_NK) |>
+  as.matrix()
+```
+
+```{r}
+#| label: nk-proportions-conversion-to-categorical
+
+nk_cells_proportions_category_data <- nk_cells_proportions |>
+  mutate(proportion_NK_category = case_when(
+    proportion_NK <= 0.25 ~ "< 25% NKs",
+    proportion_NK > 0.25 & proportion_NK <= 0.5 ~ "25 - 50% NKs",
+    proportion_NK > 0.5 & proportion_NK <= 0.75 ~ "50 - 75% NKs",
+    proportion_NK > 0.75 & proportion_NK <= 1 ~ "> 75% NKs",
+  )) |>
+  mutate(proportion_NK_category = fct_relevel(
+    proportion_NK_category,
+    "< 25% NKs",
+    "25 - 50% NKs",
+    "50 - 75% NKs",
+    "> 75% NKs"
+  )) |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  select(-X)
+
+nk_cells_proportions_category <- nk_cells_proportions_category_data |>
+  column_to_rownames("label") |>
+  pull(proportion_NK_category)
+```
+
+```{r}
+#| label: processing-process-data
+#| include: false
+
+list2env(processed_process_data, envir = .GlobalEnv)
+```
+
+# scRNA
+
+```{r}
+#| label: nested-glmnet
+
+scRNA_data_modelling <- scRNA_data_wide |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  drop_na() |> 
+  select(!run:omics) |> 
+  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
+  relocate(proportion_NK, proportion_NK_quartile)
+
+nested_glmnet_results <- nested_lasso_regression(
+  data = scRNA_data_modelling,
+  target_variable = "proportion_NK",
+  seed = 89,
+  penalty_range = c(-4, 0),
+  levels = 4,
+  outer_folds = 5,
+  outer_repeats = 5,
+  inner_folds = 3,
+  final_tune_folds = 5,
+  metric = "rmse",
+  strata = "proportion_NK_quartile"
+)
+```
+
+## Model assessment
+
+Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
+
+::: panel-tabset
+### Model metrics - overall
+
+```{r}
+#| label: tbl-nested-rf-regression-metrics-overall
+
+nested_glmnet_results$outer_performance |>
+  unnest(cols = fold) |> 
+  group_by(.metric) |> 
+  summarise(
+    mean_estimate = mean(.estimate, na.rm = TRUE),
+    median_estimate = median(.estimate, na.rm = TRUE)
+  ) |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics - Overall")
+  )
+```
+
+### Model metrics - each fold
+
+```{r}
+#| label: tbl-nested-rf-regression-metrics
+
+nested_glmnet_results$outer_performance |>
+  unnest(cols = fold) |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics")
+  )
+```
+
+### Plotting true vs. predicted values
+
+```{r}
+#| label: fig-random-forest-regression-truth-vs-predicted
+#| fig-cap: Random forest regression model truth vs. predictions
+
+ggplot(nested_glmnet_results$outer_performance |>
+  unnest(cols = fold),
+  aes(x = .metric, y = .estimate)) +
+    geom_boxplot() +
+  facet_wrap(~ .metric, scales = "free") +
+  theme_catapult()
+```
+:::
+
+## Final model - parameters
+
+```{r}
+#| label: tbl-nested-rf-regression-final-model-parameters
+
+nested_glmnet_results$final_model$fit$fit$spec$args |>
+  map(eval_tidy) |>
+  {\(x) tibble(parameter = names(x), value = as.character(x))}() |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Final model - selected parameters")
+  )
+```
+
+## Feature importance
+
+The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
+
+::::::::: panel-tabset
+### Ranked features
+
+```{r}
+feature_coefficients <- tidy(nested_glmnet_results$final_model) |> 
+  filter(estimate != 0) |> 
+  arrange(desc(abs(estimate)))
+```
+
+```{r}
+#| fig-height: 8
+#| fig-width: 8
+
+ggplot(feature_coefficients |> 
+         filter(!term == "(Intercept)"),
+       aes(x = fct_reorder(term, estimate), y = estimate)) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Retained features",
+    subtitle = "Features with non-zero coefficients",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  scale_fill_catapult_d()
+```
+
+# O-link
+
+```{r}
+#| label: olink-nested-lasso
+
+olink_data_modelling <- wide_olink |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(proportion_NK) |> 
+  drop_na() |> 
+  select(!run:DF) |> 
+  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
+  relocate(proportion_NK, proportion_NK_quartile)
+
+olink_lasso_results <- nested_lasso_regression(
+  data = olink_data_modelling,
+  target_variable = "proportion_NK",
+  seed = 89,
+  penalty_range = c(-4, 0),
+  levels = 4,
+  outer_folds = 5,
+  outer_repeats = 10,
+  inner_folds = 3,
+  final_tune_folds = 5,
+  metric = "rmse",
+  strata = "proportion_NK_quartile"
+)
+```
+
+## Model assessment
+
+Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
+
+::: panel-tabset
+### Model metrics - overall
+
+```{r}
+#| label: olink-tbl-nested-rf-regression-metrics-overall
+
+olink_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  group_by(.metric) |> 
+  summarise(
+    mean_estimate = mean(.estimate, na.rm = TRUE),
+    median_estimate = median(.estimate, na.rm = TRUE)
+  ) |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics - Overall")
+  )
+```
+
+### Model metrics - each fold
+
+```{r}
+#| label: tbl-nested-rf-regression-metrics
+
+olink_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics")
+  )
+```
+
+### Plotting true vs. predicted values
+
+```{r}
+#| label: fig-random-forest-regression-truth-vs-predicted
+#| fig-cap: Random forest regression model truth vs. predictions
+
+ggplot(olink_lasso_results$outer_performance |>
+  unnest(cols = fold),
+  aes(x = .metric, y = .estimate)) +
+    geom_boxplot() +
+  facet_wrap(~ .metric, scales = "free") +
+  theme_catapult()
+```
+:::
+
+## Final model - parameters
+
+```{r}
+#| label: tbl-nested-rf-regression-final-model-parameters
+
+olink_lasso_results$final_model$fit$fit$spec$args |>
+  map(eval_tidy) |>
+  {\(x) tibble(parameter = names(x), value = as.character(x))}() |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Final model - selected parameters")
+  )
+```
+
+## Feature importance
+
+The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
+
+::::::: panel-tabset
+### Ranked features
+
+```{r}
+olink_feature_coefficients <- tidy(olink_lasso_results$final_model) |> 
+  filter(estimate != 0) |> 
+  arrange(desc(abs(estimate)))
+```
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+ggplot(olink_feature_coefficients |> 
+         filter(!term == "(Intercept)"),
+       aes(x = fct_reorder(term, estimate), y = estimate)) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Retained features",
+    subtitle = "Features with non-zero coefficients",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  scale_fill_catapult_d()
+```
+
+# miRNA
+
+```{r}
+#| label: mirna-nested-lasso
+
+mirna_data_modelling <- miRNA_data_scaled |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(proportion_NK) |> 
+  drop_na() |> 
+  select(!omics:run) |> 
+  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
+  relocate(proportion_NK, proportion_NK_quartile)
+
+mirna_lasso_results <- nested_lasso_regression(
+  data = mirna_data_modelling,
+  target_variable = "proportion_NK",
+  seed = 89,
+  penalty_range = c(-4, 0),
+  levels = 4,
+  outer_folds = 5,
+  outer_repeats = 10,
+  inner_folds = 3,
+  final_tune_folds = 5,
+  metric = "rmse",
+  strata = "proportion_NK_quartile"
+)
+```
+
+## Model assessment
+
+Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
+
+::: panel-tabset
+### Model metrics - overall
+
+```{r}
+#| label: mirna-tbl-nested-rf-regression-metrics-overall
+
+mirna_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  group_by(.metric) |> 
+  summarise(
+    mean_estimate = mean(.estimate, na.rm = TRUE),
+    median_estimate = median(.estimate, na.rm = TRUE)
+  ) |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics - Overall")
+  )
+```
+
+### Model metrics - each fold
+
+```{r}
+#| label: tbl-nested-rf-regression-metrics
+
+mirna_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics")
+  )
+```
+
+### Plotting true vs. predicted values
+
+```{r}
+#| label: fig-random-forest-regression-truth-vs-predicted
+#| fig-cap: Random forest regression model truth vs. predictions
+
+ggplot(mirna_lasso_results$outer_performance |>
+  unnest(cols = fold),
+  aes(x = .metric, y = .estimate)) +
+    geom_boxplot() +
+  facet_wrap(~ .metric, scales = "free") +
+  theme_catapult()
+```
+:::
+
+## Final model - parameters
+
+```{r}
+#| label: tbl-nested-rf-regression-final-model-parameters
+
+mirna_lasso_results$final_model$fit$fit$spec$args |>
+  map(eval_tidy) |>
+  {\(x) tibble(parameter = names(x), value = as.character(x))}() |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Final model - selected parameters")
+  )
+```
+
+## Feature importance
+
+The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
+
+::::: panel-tabset
+### Ranked features
+
+```{r}
+mirna_feature_coefficients <- tidy(mirna_lasso_results$final_model) |> 
+  filter(estimate != 0) |> 
+  arrange(desc(abs(estimate)))
+```
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+ggplot(mirna_feature_coefficients |> 
+         filter(!term == "(Intercept)"),
+       aes(x = fct_reorder(term, estimate), y = estimate)) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Retained features",
+    subtitle = "Features with non-zero coefficients",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  scale_fill_catapult_d()
+```
+
+# LCMS
+
+```{r}
+#| label: lcms-nested-lasso
+
+lcms_data
+
+lcms_data_modelling <- lcms_data |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(proportion_NK) |> 
+  drop_na() |> 
+  select(!omics:vessel) |> 
+  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
+  relocate(proportion_NK, proportion_NK_quartile)
+
+lcms_lasso_results <- nested_lasso_regression(
+  data = lcms_data_modelling,
+  target_variable = "proportion_NK",
+  seed = 89,
+  penalty_range = c(-4, 0),
+  levels = 4,
+  outer_folds = 5,
+  outer_repeats = 10,
+  inner_folds = 3,
+  final_tune_folds = 5,
+  metric = "rmse",
+  strata = "proportion_NK_quartile"
+)
+```
+
+## Model assessment
+
+Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
+
+::: panel-tabset
+### Model metrics - overall
+
+```{r}
+#| label: lcms-tbl-nested-rf-regression-metrics-overall
+
+lcms_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  group_by(.metric) |> 
+  summarise(
+    mean_estimate = mean(.estimate, na.rm = TRUE),
+    median_estimate = median(.estimate, na.rm = TRUE)
+  ) |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics - Overall")
+  )
+```
+
+### Model metrics - each fold
+
+```{r}
+#| label: tbl-nested-rf-regression-metrics
+
+lcms_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics")
+  )
+```
+
+### Plotting true vs. predicted values
+
+```{r}
+#| label: fig-random-forest-regression-truth-vs-predicted
+#| fig-cap: Random forest regression model truth vs. predictions
+
+ggplot(lcms_lasso_results$outer_performance |>
+  unnest(cols = fold),
+  aes(x = .metric, y = .estimate)) +
+    geom_boxplot() +
+  facet_wrap(~ .metric, scales = "free") +
+  theme_catapult()
+```
+:::
+
+## Final model - parameters
+
+```{r}
+#| label: tbl-nested-rf-regression-final-model-parameters
+
+lcms_lasso_results$final_model$fit$fit$spec$args |>
+  map(eval_tidy) |>
+  {\(x) tibble(parameter = names(x), value = as.character(x))}() |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Final model - selected parameters")
+  )
+```
+
+## Feature importance
+
+The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
+
+::: panel-tabset
+### Ranked features
+
+```{r}
+lcms_feature_coefficients <- tidy(lcms_lasso_results$final_model) |> 
+  filter(estimate != 0) |> 
+  arrange(desc(abs(estimate))) |> 
+  filter(!term == "(Intercept)")
+```
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+ggplot(lcms_feature_coefficients,
+       aes(x = fct_reorder(term, estimate), y = estimate)) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Retained features",
+    subtitle = "Features with non-zero coefficients",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  scale_fill_catapult_d()
+```
+:::
+
+# All feature importances
+
+```{r}
+#| label: all-feature-importances
+
+all_late_feature_importances <- bind_rows(
+  lcms_feature_coefficients |> 
+    mutate(omics = "lcms"),
+  mirna_feature_coefficients |>
+    filter(!term == "(Intercept)") |> 
+    mutate(omics = "miRNA"),
+  olink_feature_coefficients |> 
+    filter(!term == "(Intercept)") |> 
+    mutate(omics = "olink"),
+  feature_coefficients |>
+    filter(!term == "(Intercept)") |> 
+    mutate(omics = "scRNA")
+)
+
+write.csv(all_late_feature_importances, here("00_data/feature_importances/late_integration_feature_importances.csv"))
+```

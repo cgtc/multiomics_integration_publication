@@ -1,0 +1,788 @@
+---
+title: "Early integration NK % modelling"
+author: "Joseph Oddy"
+lightbox: auto
+execute:
+  echo: false
+  warning: false
+  dev: "ragg_png"
+  cache: false
+format:
+  html:
+    theme: flatly
+    mermaid:
+      theme: neutral
+    page-layout: article
+    self-contained: true
+    code-line-numbers: true
+    code-block-bg: true
+    code-block-border-left: "#30BBF0"
+    code-copy: true
+    code-link: false
+    code-fold: true
+    code-tools:
+      source: true
+      toggle: false
+      caption: none
+    fig-align: center
+    fig-height: 5
+    fig-width: 8
+    fig-responsive: true
+    fig-dpi: 150
+    fig-cap-location: top
+    number-sections: true
+    number-depth: 2
+    toc: true
+    toc-depth: 3
+    dev: "ragg_png"
+    smooth-scroll: true
+    embed-resources: true
+---
+
+```{r}
+#| label: library-loading
+
+library(tidyverse)
+library(here)
+library(aqua)
+library(umap)
+library(mixOmics)
+# mixKernel has quite a few dependencies, see mixKernel installation guide
+library(mixKernel)
+library(conflicted)
+library(janitor)
+library(gt)
+library(ggrepel)
+library(kernlab)
+library(feather)
+library(UpSetR)
+library(ComplexUpset)
+library(arrow)
+library(patchwork)
+library(tidymodels)
+library(CGTCanalyse)
+library(vip)
+library(rlang)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::rename)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::lag)
+conflicts_prefer(dplyr::desc)
+conflicts_prefer(aqua::rescale)
+conflicts_prefer(ComplexUpset::upset)
+conflicts_prefer(vip::vip)
+conflicted::conflicts_prefer(purrr::map)
+
+#load(here("00_data/early_integration_NK_percentage_modelling_environment.RData"))
+```
+
+```{r}
+#| label: sourcing-data-acquisition-script
+#| output: FALSE
+#| cache-lazy: FALSE
+
+source(here("01_scripts/data_acquisition.R"))
+
+BPPARAM <- BiocParallel::SnowParam(workers = parallel::detectCores() - 1)
+```
+
+```{r}
+#| label: scRNA-data-loading
+
+var_features <- setdiff(names(combined_run3_run4_variable_genes_union_df)[-c(1:47)],
+                              c("plasticell_sample_id", "label", "omics", "site"))
+
+scRNA_data_long <- combined_pseudobulk_df |>
+  select(label, omics, all_of(var_features)) |>
+  pivot_longer(
+    cols = all_of(var_features),
+    names_to = "gene",
+    values_to = "normalised_expression"
+  ) |>
+  group_by(gene) |>
+  mutate(scaled_expression = scale(normalised_expression)) |>
+  mutate(
+    vessel = as.numeric(str_extract(label, "(?<=v)\\d+")),
+    day = as.numeric(str_extract(label, "(?<=d)\\d+")),
+    run = as.numeric(str_extract(label, "(?<=r)\\d+"))
+  ) |>
+  relocate(run, vessel, day)
+
+scRNA_data_wide <- scRNA_data_long |>
+  select(-normalised_expression) |>
+  pivot_wider(
+    names_from = gene,
+    values_from = scaled_expression
+  )
+```
+
+```{r}
+#| label: lcms-data-loading
+
+lcms_data <- processed_lcms$both_runs_data_wide |>
+  mutate(omics = "lcms") |>
+  relocate(omics) |>
+  mutate(
+    run = as.numeric(run),
+    vessel = as.numeric(vessel)
+  )
+```
+
+```{r}
+#| label: olink-data-loading
+
+long_olink <- processed_olink$data |>
+  filter(!Timepoint == "Fresh Media") |>
+  filter(DF == "Neat") |>
+  select(label, omics, NPX, Assay, vessel, stream, Timepoint, DF) |>
+  filter(Assay %in% processed_olink$m_assays) |>
+  group_by(Assay) |>
+  mutate(scaled_NPX = scale(NPX)) |>
+  ungroup()
+
+wide_olink <- long_olink |>
+  select(-NPX) |>
+  pivot_wider(
+    names_from = Assay,
+    values_from = scaled_NPX,
+    values_fn = mean
+  ) |>
+  mutate(
+    day = as.numeric(str_remove(Timepoint, "Day ")),
+    vessel = as.numeric(str_remove(vessel, "V")),
+    run = 4
+  ) |>
+  relocate(run, day)
+```
+
+
+```{r}
+#| label: miRNA-data-loading
+
+miRNA_data <- processed_miRNA$processed_miRNA |>
+  mutate(omics = "miRNA") |>
+  relocate(omics) |>
+  mutate(
+    run = as.numeric(run),
+    vessel = as.numeric(vessel)
+  )
+
+processed_miRNA_long <- miRNA_data |>
+  pivot_longer(
+    cols = starts_with("ENS"),
+    names_to = "miRNA_name",
+    values_to = "deseq_normalised_and_vst_expression"
+  ) |>
+  group_by(miRNA_name) |>
+  mutate(scaled_expression = scale(deseq_normalised_and_vst_expression)) |>
+  ungroup()
+
+miRNA_data_scaled <- processed_miRNA_long |>
+  select(-deseq_normalised_and_vst_expression) |>
+  pivot_wider(
+    names_from = miRNA_name,
+    values_from = scaled_expression
+  )
+```
+
+```{r}
+#| label: process-data-loading
+
+process_data <- processed_process_data$all_process_data_unscaled_added_metrics
+```
+
+```{r}
+#| label: combining-data
+
+combined_data <- lcms_data |>
+  select(!c(omics, run:vessel)) |>
+  full_join(
+    miRNA_data_scaled |>
+      select(!c(omics, vessel:run)),
+    by = "label", suffix = c("_lcms", "_miRNA")
+  ) |>
+  full_join(
+    wide_olink |>
+      select(!c(run:day, omics:DF)),
+    by = "label", suffix = c("_miRNA", "_olink")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      select(!c(run, vessel, day, omics)),
+    by = "label", suffix = c("_olink", "_scRNA")
+  )
+
+combined_data_names <- names(combined_data) |> 
+  as_tibble()
+
+combined_metadata <- lcms_data |>
+  rename(lcms = "omics") |>
+  select(lcms:vessel) |>
+  full_join(
+    miRNA_data_scaled |>
+      rename(miRNA = "omics") |>
+      select(miRNA:run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    wide_olink |>
+      rename(olink = "omics") |>
+      select(run:DF),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      rename(scRNA = "omics") |>
+      select(scRNA, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  mutate(stage = case_when(
+    day >= 1 & day <= 3 ~ "mesoderm_commitment",
+    day >= 4 & day <= 6 ~ "hemogenic_endothelium",
+    day >= 8 & day <= 12 ~ "early_haem",
+    day >= 13 & day <= 15 ~ "late_haem",
+    day >= 19 & day <= 26 ~ "early_NK",
+    day >= 29 & day <= 36 ~ "late_NK",
+    TRUE ~ "undefined"
+  )) |>
+  mutate(stage = fct_relevel(
+    stage,
+    "mesoderm_commitment",
+    "hemogenic_endothelium",
+    "early_haem",
+    "late_haem",
+    "early_NK",
+    "late_NK"
+  )) |>
+  mutate(omics = paste(
+    ifelse(!is.na(lcms), lcms, ""),
+    ifelse(!is.na(miRNA), miRNA, ""),
+    ifelse(!is.na(olink), olink, ""),
+    ifelse(!is.na(scRNA), scRNA, ""),
+    sep = "+"
+  )) |>
+  mutate(omics = gsub("\\++", "+", omics)) |>
+  mutate(omics = gsub("^\\+|\\+$", "", omics))
+```
+
+```{r}
+#| label: mixomics-data-preparation-no-missing-data
+
+common_samples <- combined_data |>
+  drop_na() |>
+  select(label)
+
+lcms_matrix <- lcms_data |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:vessel) |>
+  as.matrix()
+
+miRNA_matrix <- miRNA_data_scaled |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:run) |>
+  as.matrix()
+
+olink_matrix <- wide_olink |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:DF) |>
+  as.matrix()
+
+scRNA_matrix <- scRNA_data_wide |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:omics) |>
+  as.matrix()
+
+multiomics_list <- list(
+  lcms = lcms_matrix,
+  miRNA = miRNA_matrix,
+  olink = olink_matrix,
+  scRNA = scRNA_matrix
+)
+
+stage <- combined_metadata |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  pull(stage)
+```
+
+```{r}
+#| label: combining-data-and-process-data
+
+combined_data_and_process <- lcms_data |>
+  select(!c(omics, run:vessel)) |>
+  full_join(
+    miRNA_data_scaled |>
+      select(!c(omics, vessel:run)),
+    by = "label"
+  ) |>
+  full_join(
+    wide_olink |>
+      select(!c(run:day, omics:DF)),
+    by = "label"
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      select(!c(run, vessel, day, omics)),
+    by = "label"
+  ) |>
+  full_join(
+    process_data |>
+      select(!c(run, vessel, day, omics)),
+    by = "label"
+  )
+
+combined_metadata_and_process <- lcms_data |>
+  rename(lcms = "omics") |>
+  select(lcms:vessel) |>
+  full_join(
+    miRNA_data_scaled |>
+      rename(miRNA = "omics") |>
+      select(miRNA:run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    wide_olink |>
+      rename(olink = "omics") |>
+      select(run:DF),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      rename(scRNA = "omics") |>
+      select(scRNA, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  full_join(
+    process_data |>
+      rename(process = "omics") |>
+      select(process, label, vessel, day, run),
+    by = c("label", "day", "run", "vessel")
+  ) |>
+  mutate(stage = case_when(
+    day >= 1 & day <= 3 ~ "mesoderm_commitment",
+    day >= 4 & day <= 6 ~ "hemogenic_endothelium",
+    day >= 8 & day <= 12 ~ "early_haem",
+    day >= 13 & day <= 15 ~ "late_haem",
+    day >= 19 & day <= 26 ~ "early_NK",
+    day >= 29 & day <= 36 ~ "late_NK",
+    TRUE ~ "undefined"
+  )) |>
+  mutate(stage = fct_relevel(
+    stage,
+    "mesoderm_commitment",
+    "hemogenic_endothelium",
+    "early_haem",
+    "late_haem",
+    "early_NK",
+    "late_NK"
+  )) |>
+  mutate(omics = paste(
+    ifelse(!is.na(lcms), lcms, ""),
+    ifelse(!is.na(miRNA), miRNA, ""),
+    ifelse(!is.na(olink), olink, ""),
+    ifelse(!is.na(scRNA), scRNA, ""),
+    ifelse(!is.na(process), process, ""),
+    sep = "+"
+  )) |>
+  mutate(omics = gsub("\\++", "+", omics)) |>
+  mutate(omics = gsub("^\\+|\\+$", "", omics))
+```
+
+```{r}
+#| label: mixomics-data-preparation-with-missing-data
+#| cache-lazy: false
+
+summary_metric_samples <- combined_data_and_process |>
+  filter(!is.na(cancer_cells_killed_per_PSC)) |>
+  select(label)
+
+lcms_matrix_process <- lcms_data |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:vessel) |>
+  as.matrix()
+
+miRNA_matrix_process <- miRNA_data_scaled |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!omics:run) |>
+  as.matrix()
+
+olink_matrix_process <- wide_olink |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:DF) |>
+  as.matrix()
+
+scRNA_matrix_process <- scRNA_data_wide |>
+  right_join(
+    summary_metric_samples,
+    by = "label"
+  ) |>
+  arrange(label) |>
+  column_to_rownames("label") |>
+  select(!run:omics) |>
+  as.matrix()
+
+multiomics_list_process <- list(
+  lcms = lcms_matrix_process,
+  miRNA = miRNA_matrix_process,
+  olink = olink_matrix_process,
+  scRNA = scRNA_matrix_process
+)
+
+summary_metric <- process_data |>
+  filter(label %in% summary_metric_samples$label) |>
+  arrange(label) |>
+  select(cancer_cells_killed_per_PSC, label) |>
+  column_to_rownames("label") |>
+  as.matrix()
+```
+
+```{r}
+#| label: loading-nk-cell-proportion-data
+
+nk_cells_proportions <- read.csv(here("00_data/nk_cell_proportions_run_4.csv")) |>
+  mutate(
+    vessel_day = as.character(vessel_day),
+    vessel = as.numeric(sub("V(\\d+)_D\\d+", "\\1", vessel_day)),
+    day = as.numeric(sub("V\\d+_D(\\d+)", "\\1", vessel_day)),
+    label = paste0("r4_v", vessel, "_d", day)
+  )
+
+nk_cells_proportions_subset <- nk_cells_proportions |>
+  filter(label %in% common_samples$label) |>
+  arrange(label)
+
+nk_cells_target <- nk_cells_proportions_subset |>
+  column_to_rownames("label") |>
+  select(proportion_NK) |>
+  as.matrix()
+```
+
+```{r}
+#| label: nk-proportions-conversion-to-categorical
+
+nk_cells_proportions_category_data <- nk_cells_proportions |>
+  mutate(proportion_NK_category = case_when(
+    proportion_NK <= 0.25 ~ "< 25% NKs",
+    proportion_NK > 0.25 & proportion_NK <= 0.5 ~ "25 - 50% NKs",
+    proportion_NK > 0.5 & proportion_NK <= 0.75 ~ "50 - 75% NKs",
+    proportion_NK > 0.75 & proportion_NK <= 1 ~ "> 75% NKs",
+  )) |>
+  mutate(proportion_NK_category = fct_relevel(
+    proportion_NK_category,
+    "< 25% NKs",
+    "25 - 50% NKs",
+    "50 - 75% NKs",
+    "> 75% NKs"
+  )) |>
+  filter(label %in% common_samples$label) |>
+  arrange(label) |>
+  select(-X)
+
+nk_cells_proportions_category <- nk_cells_proportions_category_data |>
+  column_to_rownames("label") |>
+  pull(proportion_NK_category)
+```
+
+```{r}
+#| label: processing-process-data
+#| include: false
+
+list2env(processed_process_data, envir = .GlobalEnv)
+```
+
+# Nested cross-validation of random forest model
+
+The model used here to test the early integration method is a random forest regression model. 
+
+Originally, the performance of this model was assessed using the strategy described in tidymodels, which uses an initial split to divide the data into a training and testing set. Hyperparameter tuning is then performed using cross-validation and grid-search on the training set. The best hyperparameters found from this are then used to fit a model on the entire training data. This model is then used to predict the target variable from the unseen testing set.
+
+However, this uses only one fold for testing due to the nature of the initial split. Instead we can use nested cross-validation to repeat the performance assessment via cross-validation, to ensure the estimates of model accuracy are a bit more reliable.
+
+Having assessed the performance of the model, we can train a new model on all the data. We perform another grid-search and cross-validation to select the best hyperparameters from all the data. Feature importances are then extracted from this model that was trained on all the data. Importantly, this model is not used to assess the performance of the model, only for the feature importances.
+
+```{r}
+#| label: rf-data-object
+
+rf_data <- combined_data |> 
+  drop_na() |> 
+  left_join(nk_cells_proportions_subset |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  select(-label) |> 
+  # add grouping variable for proportion_NK for stratification
+  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
+  relocate(proportion_NK, proportion_NK_quartile)
+```
+
+
+```{r}
+#| label: nested-rf-regression
+
+nested_rf_results <- nested_rf_regression(
+  data = rf_data,
+  target_variable = "proportion_NK",
+  seed = 89,
+  trees = 100,
+  mtry_range = c(1, 15),
+  min_n_range = c(2, 20),
+  levels = 4,
+  outer_folds = 5,
+  outer_repeats = 5,
+  inner_folds = 3,
+  final_tune_folds = 5,
+  metric = "rmse",
+  strata = "proportion_NK_quartile"
+)
+```
+
+## Model assessment
+
+Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
+
+::: panel-tabset
+### Model metrics - overall
+```{r}
+#| label: tbl-nested-rf-regression-metrics-overall
+
+nested_rf_results$outer_performance |>
+  unnest(cols = fold) |> 
+  group_by(.metric) |> 
+  summarise(
+    mean_estimate = mean(.estimate, na.rm = TRUE),
+    median_estimate = median(.estimate, na.rm = TRUE)
+  ) |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics - Overall")
+  )
+```
+
+
+### Model metrics - each fold
+```{r}
+#| label: tbl-nested-rf-regression-metrics
+
+nested_rf_results$outer_performance |>
+  unnest(cols = fold) |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics")
+  )
+```
+
+### Plotting true vs. predicted values
+```{r}
+#| label: fig-random-forest-regression-truth-vs-predicted
+#| fig-cap: Random forest regression model truth vs. predictions
+
+ggplot(nested_rf_results$outer_performance |>
+  unnest(cols = fold),
+  aes(x = .metric, y = .estimate)) +
+    geom_boxplot() +
+  facet_wrap(~ .metric, scales = "free") +
+  theme_catapult()
+```
+:::
+
+## Final model - parameters
+
+```{r}
+#| label: tbl-nested-rf-regression-final-model-parameters
+
+nested_rf_results$final_model$fit$fit$spec$args |>
+  map(eval_tidy) |>
+  {\(x) tibble(parameter = names(x), value = as.character(x))}() |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Final model - selected parameters")
+  )
+```
+
+
+## Feature importance
+
+The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
+
+::: panel-tabset
+### Ranked features
+```{r}
+feature_importances <- nested_rf_results$final_model |>
+  extract_fit_parsnip() |>
+  (\(x) x$fit$variable.importance)() |>
+  enframe(name = "feature", value = "importance") |>
+  arrange(desc(importance))
+
+lcms_features <- lcms_data |>
+  select(!omics:vessel) |> 
+  names() |> 
+  as_tibble() |> 
+  rename(feature = "value") |> 
+  mutate(omics = "lcms")
+
+miRNA_features <- miRNA_data_scaled |>
+  select(!omics:run) |> 
+  names() |> 
+  as_tibble() |> 
+  rename(feature = "value") |> 
+  mutate(omics = "miRNA")
+
+olink_features <- wide_olink |>
+  select(!run:DF) |> 
+  names() |> 
+  as_tibble() |> 
+  rename(feature = "value") |> 
+  mutate(omics = "olink")
+
+scRNA_features <- scRNA_data_wide |>
+  select(!run:omics) |> 
+  names() |> 
+  as_tibble() |> 
+  rename(feature = "value") |> 
+  mutate(omics = "scRNA")
+
+all_features <- bind_rows(
+  lcms_features,
+  miRNA_features,
+  olink_features,
+  scRNA_features
+)
+
+feature_importances_annotated <- feature_importances |> 
+  left_join(all_features, by = "feature") |> 
+  mutate(omics = case_when(
+    str_detect(feature, "lcms") ~ "lcms",
+    str_detect(feature, "miRNA") ~ "miRNA",
+    str_detect(feature, "olink") ~ "olink",
+    str_detect(feature, "scRNA") ~ "scRNA",
+    TRUE ~ omics
+  )) |> 
+  mutate(feature = str_remove(feature, "_lcms|_miRNA|_olink|_scRNA"))
+```
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+ggplot(feature_importances_annotated |> 
+         arrange(-importance) |> 
+         slice_head(n = 10), aes(x = fct_reorder(feature, importance), y = importance, fill = omics)) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Feature importance",
+    subtitle = "Top 10 features with greatest importance",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  scale_fill_catapult_d()
+```
+
+### Number of features from each modality
+```{r}
+#| fig-width: 8
+#| fig-height: 3
+
+if(!here("00_data/early_integration_feature_importances.rds") |> 
+   file.exists()) {
+  write_rds(feature_importances_annotated, here("00_data/early_integration_feature_importances.rds"))
+}
+
+feature_importances_annotated |> 
+  filter(importance > 0) |> 
+  group_by(omics) |> 
+  summarise(n_features = n()) |> 
+  ggplot(aes(x = reorder(omics, n_features), y = n_features)) +
+  geom_col() +
+  theme_catapult() +
+  coord_flip() +
+  geom_text(
+    aes(label = n_features),
+    hjust = -0.5,
+    size = 3.5,
+    colour = "black"
+  ) +
+  labs(
+    title = "Number of features with positive importance",
+    subtitle = "Early integration - random forest regression model",
+    x = "Omics",
+    y = "Number of features"
+  )
+  
+```
+
+### Distribution of feature importances
+```{r}
+ggplot(feature_importances_annotated |> 
+         filter(importance > 0),
+       aes(x = importance)) +
+  geom_histogram(bins = 50) +
+  facet_wrap(~ omics, scales = "free_y") +
+  theme_catapult()
+```
+
+### Distribution of negative importances
+```{r}
+ggplot(feature_importances_annotated |> 
+         filter(importance < 0),
+       aes(x = importance)) +
+  geom_histogram(bins = 50) +
+  facet_wrap(~ omics, scales = "free_y") +
+  theme_catapult()
+```
+:::
+
+```{r}
+save.image(here("00_data/early_integration_NK_percentage_modelling_environment.RData"))
+```
+
