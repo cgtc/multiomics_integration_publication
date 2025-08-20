@@ -1,5 +1,5 @@
 ---
-title: "Early integration NK % modelling"
+title: "Early integration analysis notebook"
 author: "Joseph Oddy"
 lightbox: auto
 execute:
@@ -39,6 +39,10 @@ format:
     embed-resources: true
 ---
 
+# Data loading/processing
+
+The first steps in this notebook load the necessary libraries, source the data acquisition script, and process the data. This involves some separate processing of the different data modalities (e.g. scaling) before combining them into a single large matrix with the target variable (% of NK cells in sample) appended to this.
+
 ```{r}
 #| label: library-loading
 
@@ -46,17 +50,12 @@ library(tidyverse)
 library(here)
 library(aqua)
 library(umap)
-library(mixOmics)
-# mixKernel has quite a few dependencies, see mixKernel installation guide
-library(mixKernel)
 library(conflicted)
 library(janitor)
 library(gt)
 library(ggrepel)
 library(kernlab)
 library(feather)
-library(UpSetR)
-library(ComplexUpset)
 library(arrow)
 library(patchwork)
 library(tidymodels)
@@ -72,6 +71,7 @@ conflicts_prefer(aqua::rescale)
 conflicts_prefer(ComplexUpset::upset)
 conflicts_prefer(vip::vip)
 conflicted::conflicts_prefer(purrr::map)
+conflicts_prefer(base::as.factor)
 
 #load(here("00_data/early_integration_NK_percentage_modelling_environment.RData"))
 ```
@@ -515,13 +515,7 @@ list2env(processed_process_data, envir = .GlobalEnv)
 
 # Nested cross-validation of random forest model
 
-The model used here to test the early integration method is a random forest regression model. 
-
-Originally, the performance of this model was assessed using the strategy described in tidymodels, which uses an initial split to divide the data into a training and testing set. Hyperparameter tuning is then performed using cross-validation and grid-search on the training set. The best hyperparameters found from this are then used to fit a model on the entire training data. This model is then used to predict the target variable from the unseen testing set.
-
-However, this uses only one fold for testing due to the nature of the initial split. Instead we can use nested cross-validation to repeat the performance assessment via cross-validation, to ensure the estimates of model accuracy are a bit more reliable.
-
-Having assessed the performance of the model, we can train a new model on all the data. We perform another grid-search and cross-validation to select the best hyperparameters from all the data. Feature importances are then extracted from this model that was trained on all the data. Importantly, this model is not used to assess the performance of the model, only for the feature importances.
+The model used here to test the early integration method is a random forest regression model. Nested cross-validation is used to assess the performance of the model, with an outer loop for performance assessment and an inner loop for hyperparameter tuning.
 
 ```{r}
 #| label: rf-data-object
@@ -651,7 +645,9 @@ nested_rf_results$final_model$fit$fit$spec$args |>
 
 ## Feature importance
 
-The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
+Having assessed the performance of the model, we can train a new model on all the data. We perform another grid-search and cross-validation to select the best hyperparameters from all the data. Feature importances are then extracted from this model that was trained on all the data. Importantly, this model is not used to assess the performance of the model, only for the feature importances.
+
+@fig-feature-importance-top-10 shows the top 10 features with the greatest importance whereas @fig-feature-importance-number-of-features shows the number of features from each modality that have a positive importance. Notably, the modalities with the greatest number of features represented here are the scRNA and O-link, indicating a potential bias due to their greater dimensionality.
 
 ::: panel-tabset
 ### Ranked features
@@ -710,6 +706,7 @@ feature_importances_annotated <- feature_importances |>
 ```
 
 ```{r}
+#| label: fig-feature-importance-top-10
 #| fig-height: 4
 #| fig-width: 8
 
@@ -730,6 +727,7 @@ ggplot(feature_importances_annotated |>
 
 ### Number of features from each modality
 ```{r}
+#| label: fig-feature-importance-number-of-features
 #| fig-width: 8
 #| fig-height: 3
 
@@ -781,8 +779,4 @@ ggplot(feature_importances_annotated |>
   theme_catapult()
 ```
 :::
-
-```{r}
-save.image(here("00_data/early_integration_NK_percentage_modelling_environment.RData"))
-```
 
