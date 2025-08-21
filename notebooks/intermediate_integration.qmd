@@ -542,13 +542,6 @@ multiomics_list_test <- multiomics_list |>
   map(~ .x[-nk_cells_proportions_category_data_split$in_id, ])
 ```
 
-```{r}
-table(nk_cells_proportions_category_train, useNA = "ifany")
-```
-
-```{r}
-table(nk_cells_proportions_category_test, useNA = "ifany")
-```
 
 # Specifying model design/hyperparameters
 
@@ -911,7 +904,7 @@ Having assessed the model using cross-validation, the final model is fit on the 
 #| output: false
 
 proportion_spls_model <- block.spls(
-  X = multiomics_list_train, Y = nk_cells_proportions_train, ncomp = 3,
+  X = multiomics_list, Y = nk_cells_target, ncomp = 3,
   keepX = list_keepX_proportion_NK, design = diff_splsda_design,
   near.zero.var = TRUE, scale = FALSE
 )

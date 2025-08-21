@@ -1,13 +1,51 @@
 ---
-title: "Late integration modelling"
+title: "Late integration analysis notebook"
 author: "Joseph Oddy"
-format: html
-editor: visual
+lightbox: auto
+execute:
+  echo: false
+  warning: false
+  dev: "ragg_png"
+  cache: false
+format:
+  html:
+    theme: flatly
+    mermaid:
+      theme: neutral
+    page-layout: article
+    self-contained: true
+    code-line-numbers: true
+    code-block-bg: true
+    code-block-border-left: "#30BBF0"
+    code-copy: true
+    code-link: false
+    code-fold: true
+    code-tools:
+      source: true
+      toggle: false
+      caption: none
+    fig-align: center
+    fig-height: 5
+    fig-width: 8
+    fig-responsive: true
+    fig-dpi: 150
+    fig-cap-location: top
+    number-sections: true
+    number-depth: 2
+    toc: true
+    toc-depth: 3
+    dev: "ragg_png"
+    smooth-scroll: true
+    embed-resources: true
 ---
 
-# Introduction
+# Data processing and modelling approach
 
-I have adapted Chris' late integration modelling here to implement similar model assessment as I performed for early and intermediate integration (repeated nested cross-validation).
+The first steps in this notebook are different to those for the early and intermediate integration analyses, because the different omics are analysed separately so we don't need to keep only those samples which have data for all omics.
+
+The same modelling approach was performed for the four different omics - random forest regression assessed by nested cross-validation. Five-fold cross-validation (with repeats) was specified for the "outer fold" (performance) assessment, and three-fold cross validation for the "inner fold" hyperparameter tuning.
+
+A final model was fit on the full data for each omics modality, which was then used to determine feature importances.
 
 ```{r}
 #| label: library-loading
@@ -43,6 +81,7 @@ conflicts_prefer(ComplexUpset::upset)
 conflicts_prefer(vip::vip)
 conflicted::conflicts_prefer(purrr::map)
 conflicted::conflicts_prefer(tidyr::expand)
+conflicts_prefer(base::as.factor)
 
 #load(here("00_data/early_integration_NK_percentage_modelling_environment.RData"))
 ```
@@ -483,7 +522,9 @@ nk_cells_proportions_category <- nk_cells_proportions_category_data |>
 list2env(processed_process_data, envir = .GlobalEnv)
 ```
 
-# scRNA
+# scRNA modelling
+
+Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted. Feature importances are shown in @fig-scRNA-feature-importance.
 
 ```{r}
 #| label: nested-glmnet
@@ -513,8 +554,6 @@ nested_glmnet_results <- nested_lasso_regression(
 ```
 
 ## Model assessment
-
-Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
 
 ::: panel-tabset
 ### Model metrics - overall
@@ -606,11 +645,6 @@ nested_glmnet_results$final_model$fit$fit$spec$args |>
 
 ## Feature importance
 
-The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
-
-::::::::: panel-tabset
-### Ranked features
-
 ```{r}
 feature_coefficients <- tidy(nested_glmnet_results$final_model) |> 
   filter(estimate != 0) |> 
@@ -618,6 +652,7 @@ feature_coefficients <- tidy(nested_glmnet_results$final_model) |>
 ```
 
 ```{r}
+#| label: fig-scRNA-feature-importance
 #| fig-height: 8
 #| fig-width: 8
 
@@ -636,7 +671,9 @@ ggplot(feature_coefficients |>
   scale_fill_catapult_d()
 ```
 
-# O-link
+# O-link modelling
+
+Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-olink and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-olink. Feature importances are shown in @fig-olink-feature-importance.
 
 ```{r}
 #| label: olink-nested-lasso
@@ -668,13 +705,11 @@ olink_lasso_results <- nested_lasso_regression(
 
 ## Model assessment
 
-Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
-
 ::: panel-tabset
 ### Model metrics - overall
 
 ```{r}
-#| label: olink-tbl-nested-rf-regression-metrics-overall
+#| label: tbl-nested-rf-regression-metrics-overall-olink
 
 olink_lasso_results$outer_performance |>
   unnest(cols = fold) |> 
@@ -701,7 +736,7 @@ olink_lasso_results$outer_performance |>
 ### Model metrics - each fold
 
 ```{r}
-#| label: tbl-nested-rf-regression-metrics
+#| label: tbl-nested-rf-regression-metrics-olink
 
 olink_lasso_results$outer_performance |>
   unnest(cols = fold) |> 
@@ -723,7 +758,7 @@ olink_lasso_results$outer_performance |>
 ### Plotting true vs. predicted values
 
 ```{r}
-#| label: fig-random-forest-regression-truth-vs-predicted
+#| label: fig-random-forest-regression-truth-vs-predicted-olink
 #| fig-cap: Random forest regression model truth vs. predictions
 
 ggplot(olink_lasso_results$outer_performance |>
@@ -738,7 +773,7 @@ ggplot(olink_lasso_results$outer_performance |>
 ## Final model - parameters
 
 ```{r}
-#| label: tbl-nested-rf-regression-final-model-parameters
+#| label: tbl-nested-rf-regression-final-model-parameters-olink
 
 olink_lasso_results$final_model$fit$fit$spec$args |>
   map(eval_tidy) |>
@@ -760,11 +795,6 @@ olink_lasso_results$final_model$fit$fit$spec$args |>
 
 ## Feature importance
 
-The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
-
-::::::: panel-tabset
-### Ranked features
-
 ```{r}
 olink_feature_coefficients <- tidy(olink_lasso_results$final_model) |> 
   filter(estimate != 0) |> 
@@ -772,6 +802,7 @@ olink_feature_coefficients <- tidy(olink_lasso_results$final_model) |>
 ```
 
 ```{r}
+#| label: fig-olink-feature-importance
 #| fig-height: 4
 #| fig-width: 8
 
@@ -790,7 +821,9 @@ ggplot(olink_feature_coefficients |>
   scale_fill_catapult_d()
 ```
 
-# miRNA
+# miRNA modelling
+
+Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-mirna and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-mirna. Feature importances are shown in @fig-mirna-feature-importance.
 
 ```{r}
 #| label: mirna-nested-lasso
@@ -822,13 +855,11 @@ mirna_lasso_results <- nested_lasso_regression(
 
 ## Model assessment
 
-Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
-
 ::: panel-tabset
 ### Model metrics - overall
 
 ```{r}
-#| label: mirna-tbl-nested-rf-regression-metrics-overall
+#| label: tbl-nested-rf-regression-metrics-overall-mirna
 
 mirna_lasso_results$outer_performance |>
   unnest(cols = fold) |> 
@@ -855,7 +886,7 @@ mirna_lasso_results$outer_performance |>
 ### Model metrics - each fold
 
 ```{r}
-#| label: tbl-nested-rf-regression-metrics
+#| label: tbl-nested-rf-regression-metrics-mirna
 
 mirna_lasso_results$outer_performance |>
   unnest(cols = fold) |> 
@@ -877,7 +908,7 @@ mirna_lasso_results$outer_performance |>
 ### Plotting true vs. predicted values
 
 ```{r}
-#| label: fig-random-forest-regression-truth-vs-predicted
+#| label: fig-random-forest-regression-truth-vs-predicted-mirna
 #| fig-cap: Random forest regression model truth vs. predictions
 
 ggplot(mirna_lasso_results$outer_performance |>
@@ -892,7 +923,7 @@ ggplot(mirna_lasso_results$outer_performance |>
 ## Final model - parameters
 
 ```{r}
-#| label: tbl-nested-rf-regression-final-model-parameters
+#| label: tbl-nested-rf-regression-final-model-parameters-mirna
 
 mirna_lasso_results$final_model$fit$fit$spec$args |>
   map(eval_tidy) |>
@@ -914,10 +945,6 @@ mirna_lasso_results$final_model$fit$fit$spec$args |>
 
 ## Feature importance
 
-The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
-
-::::: panel-tabset
-### Ranked features
 
 ```{r}
 mirna_feature_coefficients <- tidy(mirna_lasso_results$final_model) |> 
@@ -926,6 +953,7 @@ mirna_feature_coefficients <- tidy(mirna_lasso_results$final_model) |>
 ```
 
 ```{r}
+#| label: fig-mirna-feature-importance
 #| fig-height: 4
 #| fig-width: 8
 
@@ -944,12 +972,12 @@ ggplot(mirna_feature_coefficients |>
   scale_fill_catapult_d()
 ```
 
-# LCMS
+# LCMS modelling
+
+Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-lcms and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-lcms. Feature importances are shown in @fig-lcms-feature-importance.
 
 ```{r}
 #| label: lcms-nested-lasso
-
-lcms_data
 
 lcms_data_modelling <- lcms_data |> 
   left_join(nk_cells_proportions |> 
@@ -978,13 +1006,11 @@ lcms_lasso_results <- nested_lasso_regression(
 
 ## Model assessment
 
-Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
-
 ::: panel-tabset
 ### Model metrics - overall
 
 ```{r}
-#| label: lcms-tbl-nested-rf-regression-metrics-overall
+#| label: tbl-nested-rf-regression-metrics-overall-lcms
 
 lcms_lasso_results$outer_performance |>
   unnest(cols = fold) |> 
@@ -1011,7 +1037,7 @@ lcms_lasso_results$outer_performance |>
 ### Model metrics - each fold
 
 ```{r}
-#| label: tbl-nested-rf-regression-metrics
+#| label: tbl-nested-rf-regression-metrics-lcms
 
 lcms_lasso_results$outer_performance |>
   unnest(cols = fold) |> 
@@ -1033,7 +1059,7 @@ lcms_lasso_results$outer_performance |>
 ### Plotting true vs. predicted values
 
 ```{r}
-#| label: fig-random-forest-regression-truth-vs-predicted
+#| label: fig-random-forest-regression-truth-vs-predicted-lcms
 #| fig-cap: Random forest regression model truth vs. predictions
 
 ggplot(lcms_lasso_results$outer_performance |>
@@ -1048,7 +1074,7 @@ ggplot(lcms_lasso_results$outer_performance |>
 ## Final model - parameters
 
 ```{r}
-#| label: tbl-nested-rf-regression-final-model-parameters
+#| label: tbl-nested-rf-regression-final-model-parameters-lcms
 
 lcms_lasso_results$final_model$fit$fit$spec$args |>
   map(eval_tidy) |>
@@ -1070,11 +1096,6 @@ lcms_lasso_results$final_model$fit$fit$spec$args |>
 
 ## Feature importance
 
-The feature importances are extracted from the model that was trained on the entire dataset (not the models which were used for performance assessment).
-
-::: panel-tabset
-### Ranked features
-
 ```{r}
 lcms_feature_coefficients <- tidy(lcms_lasso_results$final_model) |> 
   filter(estimate != 0) |> 
@@ -1083,6 +1104,7 @@ lcms_feature_coefficients <- tidy(lcms_lasso_results$final_model) |>
 ```
 
 ```{r}
+#| label: fig-lcms-feature-importance
 #| fig-height: 4
 #| fig-width: 8
 
@@ -1098,27 +1120,4 @@ ggplot(lcms_feature_coefficients,
     y = "Importance"
   ) +
   scale_fill_catapult_d()
-```
-:::
-
-# All feature importances
-
-```{r}
-#| label: all-feature-importances
-
-all_late_feature_importances <- bind_rows(
-  lcms_feature_coefficients |> 
-    mutate(omics = "lcms"),
-  mirna_feature_coefficients |>
-    filter(!term == "(Intercept)") |> 
-    mutate(omics = "miRNA"),
-  olink_feature_coefficients |> 
-    filter(!term == "(Intercept)") |> 
-    mutate(omics = "olink"),
-  feature_coefficients |>
-    filter(!term == "(Intercept)") |> 
-    mutate(omics = "scRNA")
-)
-
-write.csv(all_late_feature_importances, here("00_data/feature_importances/late_integration_feature_importances.csv"))
 ```
