@@ -82,6 +82,7 @@ conflicts_prefer(vip::vip)
 conflicted::conflicts_prefer(purrr::map)
 conflicted::conflicts_prefer(tidyr::expand)
 conflicts_prefer(base::as.factor)
+conflicts_prefer(arrow::write_feather)
 
 #load(here("00_data/early_integration_NK_percentage_modelling_environment.RData"))
 ```
@@ -527,6 +528,20 @@ list2env(processed_process_data, envir = .GlobalEnv)
 Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted. Feature importances are shown in @fig-scRNA-feature-importance.
 
 ```{r}
+mlp_scRNA_data <- scRNA_data_wide |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(label, proportion_NK) |> 
+  drop_na() |> 
+  select(!proportion_NK:omics)
+
+if(!file.exists(here("00_data/late_integration_data/scRNA_modelling_data.feather"))){
+  write_feather(mlp_scRNA_data, here("00_data/late_integration_data/scRNA_modelling_data.feather"))
+}
+```
+
+```{r}
 #| label: nested-glmnet
 
 scRNA_data_modelling <- scRNA_data_wide |> 
@@ -674,6 +689,20 @@ ggplot(feature_coefficients |>
 # O-link modelling
 
 Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-olink and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-olink. Feature importances are shown in @fig-olink-feature-importance.
+
+```{r}
+mlp_olink_data <- wide_olink |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(label, proportion_NK) |> 
+  drop_na() |> 
+  select(!proportion_NK:DF)
+
+if(!file.exists(here("00_data/late_integration_data/olink_data_modelling.feather"))){
+  write_feather(mlp_olink_data, here("00_data/late_integration_data/olink_data_modelling.feather"))
+}
+```
 
 ```{r}
 #| label: olink-nested-lasso
@@ -826,6 +855,20 @@ ggplot(olink_feature_coefficients |>
 Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-mirna and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-mirna. Feature importances are shown in @fig-mirna-feature-importance.
 
 ```{r}
+mlp_mirna_data <- miRNA_data_scaled |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(label, proportion_NK) |> 
+  drop_na() |> 
+  select(!proportion_NK:run)
+
+if(!file.exists(here("00_data/late_integration_data/mirna_data_modelling.feather"))){
+  write_feather(mlp_mirna_data, here("00_data/late_integration_data/mirna_data_modelling.feather"))
+}
+```
+
+```{r}
 #| label: mirna-nested-lasso
 
 mirna_data_modelling <- miRNA_data_scaled |> 
@@ -975,6 +1018,21 @@ ggplot(mirna_feature_coefficients |>
 # LCMS modelling
 
 Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-lcms and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-lcms. Feature importances are shown in @fig-lcms-feature-importance.
+
+```{r}
+mlp_lcms_data <- lcms_data |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(label, proportion_NK) |> 
+  drop_na() |> 
+  select(!proportion_NK:vessel)
+
+if(!file.exists(here("00_data/late_integration_data/lcms_data_modelling.feather"))){
+  write_feather(mlp_lcms_data, here("00_data/late_integration_data/lcms_data_modelling.feather"))
+}
+```
+
 
 ```{r}
 #| label: lcms-nested-lasso
