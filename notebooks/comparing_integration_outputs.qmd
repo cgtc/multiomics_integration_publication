@@ -69,6 +69,8 @@ conflicts_prefer(dplyr::desc)
 conflicts_prefer(aqua::rescale)
 conflicts_prefer(ComplexUpset::upset)
 conflicts_prefer(arrow::read_feather)
+conflicts_prefer(base::as.factor)
+conflicted::conflicts_prefer(dplyr::first)
 ```
 
 ```{r}
@@ -795,7 +797,7 @@ Import data from python.
 #| fig-width: 6
 
 # read feather file
-tsne_data <- arrow::read_feather(here("02_integration_tests/hierarchical_integration/tsne_coordinates.feather")) |>
+tsne_data <- arrow::read_feather(here("00_data/tsne_coordinates.feather")) |>
   mutate(stage = fct_relevel(
     stage,
     "mesoderm_commitment",
@@ -1011,8 +1013,12 @@ hierarchical_integration_features_plot <- hierarchical_feature_importance |>
 
 hierarchical_integration_features_plot
 ```
+## Neural network importances
 
-
+```{r}
+nn_feature_importance <- read_feather(here("00_data/feature_importances/neural_network_importances.feather")) |> 
+  clean_names()
+```
 
 ## Combined plot
 
@@ -1222,6 +1228,35 @@ all_feature_importances_cleaned |>
 
 late_integration_top_features_plot_faceted
 ```
+
+## Neural network feature importances
+
+```{r}
+#| fig-height: 10
+#| fig-width: 8
+
+nn_feature_importance |> 
+  group_by(branch) |> 
+  arrange(desc(abs(importance))) |> 
+  slice_head(n = 8) |> 
+  ungroup() |> 
+  ggplot(aes(x = reorder(feature, abs(importance)), y = importance)) +
+  facet_wrap(~ branch, scales = "free", ncol = 1) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Intermediate integration",
+    subtitle = "Multi-branch neural network",
+    x = "Feature",
+    y = "Estimate"
+  ) +
+  scale_fill_catapult_d() -> network_top_features_plot_faceted
+
+network_top_features_plot_faceted
+```
+
+
 
 ## Combined plots
 

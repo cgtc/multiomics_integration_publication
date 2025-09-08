@@ -1045,3 +1045,13 @@ ggplot(
 ```
 :::
 
+```{r}
+intermediate_integration_features <- proportion_model_loadings |> 
+  filter(comp1 != 0 | comp2 != 0 | comp3 != 0)
+
+if(!file.exists(here("00_data/feature_importances/intermediate_integration_features.rds"))){
+  write_rds(intermediate_integration_features, here("00_data/feature_importances/intermediate_integration_features.rds"))
+}
+```
+
+
