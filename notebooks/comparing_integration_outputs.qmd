@@ -1017,8 +1017,36 @@ hierarchical_integration_features_plot
 
 ```{r}
 nn_feature_importance <- read_feather(here("00_data/feature_importances/neural_network_importances.feather")) |> 
-  clean_names()
+  clean_names() |> 
+  rename(omics = "branch")
 ```
+
+```{r}
+nn_integration_features_plot <- nn_feature_importance |> 
+  arrange(-importance) |> 
+  slice_head(prop = 0.01) |> 
+  group_by(omics) |> 
+  summarise(n_features = n()) |> 
+  ggplot(aes(x = omics, y = n_features)) +
+  geom_col() +
+  theme_catapult() +
+  coord_flip() +
+  geom_text(
+    aes(label = n_features),
+    hjust = -0.2,
+    size = 3.5,
+    colour = "black"
+  ) +
+  labs(
+    title = "Intermediate integration",
+    subtitle = "Multi-branch neural network",
+    x = "Omics",
+    y = "Number of features"
+  )
+
+nn_integration_features_plot
+```
+
 
 ## Combined plot
 
@@ -1043,19 +1071,23 @@ all_feature_importances <- bind_rows(
     filter(importance > 0) |> 
     mutate(integration = "Early"),
   intermediate_integration_features |> 
-    mutate(integration = "Intermediate"),
+    mutate(integration = "Intermediate (MB-PLS)"),
   hierarchical_feature_importance |> 
     filter(importance > 0) |> 
     mutate(integration = "Hierarchical",
            omics = "All"),
   late_integration_feature_importances |> 
-    mutate(integration = "Late")
+    mutate(integration = "Late"),
+  nn_feature_importance |> 
+    arrange(-importance) |> 
+    slice_head(prop = 0.01) |> 
+    mutate(integration = "Intermediate (NN)")
 )
 ```
 
 ```{r}
 #| label: fig-combined-feature-importance-plot
-#| fig-height: 4
+#| fig-height: 5
 #| fig-width: 8
 
 all_feature_importances |> 
@@ -1074,9 +1106,10 @@ all_feature_importances |>
   ) +
   labs(
     x = "Integration method",
-    y = "# of features with > 0 importance/retained after feature selection"
+    y = "# of features exceeding importance threshold"
   ) +
-  scale_fill_catapult_d()
+  scale_fill_catapult_d() +
+  theme(plot.margin = margin(5, 30, 30, 5))
 ```
 
 
@@ -1095,7 +1128,7 @@ all_feature_importances_cleaned <- bind_rows(
     select(!feature_omics) |> 
     select(!comp2:comp3) |> 
     filter(comp1 != 0) |> 
-    mutate(integration = "Intermediate"),
+    mutate(integration = "Intermediate (MB-PLS)"),
   hierarchical_feature_importance |> 
     filter(importance > 0) |> 
     select(!index) |> 
@@ -1105,7 +1138,11 @@ all_feature_importances_cleaned <- bind_rows(
   late_integration_feature_importances |> 
     select(!penalty) |> 
     rename(feature = "term") |> 
-    mutate(integration = "Late")
+    mutate(integration = "Late"),
+  nn_feature_importance |>
+    arrange(-importance) |> 
+    slice_head(prop = 0.01) |> 
+    mutate(integration = "Intermediate (NN)")
 )
 ```
 
@@ -1348,11 +1385,12 @@ all_feature_importances_cleaned |>
   filter(integration != "Hierarchical") |> 
   group_by(feature) |> 
   summarise(
-    n_omics = n_distinct(omics),
-    integration = paste(unique(integration), collapse = ", ")
+    n_integration = n_distinct(integration),
+    integration = paste(unique(integration), collapse = ", "),
+    omics = first(omics)
   ) |> 
-  filter(n_omics > 1) |> 
-  arrange(desc(n_omics)) -> common_features_between_integration_methods
+  filter(n_integration > 1) |> 
+  arrange(desc(n_integration)) -> common_features_between_integration_methods
 
 common_features_between_integration_methods |> 
   select(!n_integration) |> 
@@ -1372,16 +1410,5 @@ common_features_between_integration_methods |>
 ```
 
 ```{r}
-all_feature_importances_cleaned |> 
-  filter(integration != "Hierarchical") |> 
-  group_by(feature) |> 
-  summarise(
-    n_integration = n_distinct(integration),
-    integration = paste(unique(integration), collapse = ", "),
-    omics = first(omics)
-  ) |> 
-  filter(n_integration > 1) |> 
-  arrange(desc(n_integration)) -> common_features_between_integration_methods
-
 common_features_between_integration_methods
 ```
