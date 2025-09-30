@@ -7651,6 +7651,16 @@ window.document.addEventListener("DOMContentLoaded", function (event) {
 <span id="cb1-1102"><a href="#cb1-1102"></a>  <span class="fu">theme_catapult</span>()</span>
 <span id="cb1-1103"><a href="#cb1-1103"></a><span class="in">```</span></span>
 <span id="cb1-1104"><a href="#cb1-1104"></a>:::</span>
+<span id="cb1-1105"><a href="#cb1-1105"></a></span>
+<span id="cb1-1108"><a href="#cb1-1108"></a><span class="in">```{r}</span></span>
+<span id="cb1-1109"><a href="#cb1-1109"></a>intermediate_integration_features <span class="ot">&lt;-</span> proportion_model_loadings <span class="sc">|&gt;</span> </span>
+<span id="cb1-1110"><a href="#cb1-1110"></a>  <span class="fu">filter</span>(comp1 <span class="sc">!=</span> <span class="dv">0</span> <span class="sc">|</span> comp2 <span class="sc">!=</span> <span class="dv">0</span> <span class="sc">|</span> comp3 <span class="sc">!=</span> <span class="dv">0</span>)</span>
+<span id="cb1-1111"><a href="#cb1-1111"></a></span>
+<span id="cb1-1112"><a href="#cb1-1112"></a><span class="cf">if</span>(<span class="sc">!</span><span class="fu">file.exists</span>(<span class="fu">here</span>(<span class="st">&quot;00_data/feature_importances/intermediate_integration_features.rds&quot;</span>))){</span>
+<span id="cb1-1113"><a href="#cb1-1113"></a>  <span class="fu">write_rds</span>(intermediate_integration_features, <span class="fu">here</span>(<span class="st">&quot;00_data/feature_importances/intermediate_integration_features.rds&quot;</span>))</span>
+<span id="cb1-1114"><a href="#cb1-1114"></a>}</span>
+<span id="cb1-1115"><a href="#cb1-1115"></a><span class="in">```</span></span>
+<span id="cb1-1116"><a href="#cb1-1116"></a></span>
 </code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal><i class="bi"></i></button></pre></div>
 </div></div></div></div></div>
 </div> <!-- /content -->
