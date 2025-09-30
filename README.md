@@ -10,7 +10,7 @@ The 00_data directory is not included in this repo due to the confidential natur
 
 There are 10 R scripts and 1 shell script in this directory, all for loading/processing LCMS, miRNA, Olink, and scRNA data in some way. The data_acquisition script is used within the integration analysis notebooks to load in the data using these.
 
-They are included here to illustrate some of the processing steps that each modality underwent.
+They are included here to illustrate some of the processing steps that each modality underwent. Some processing steps are not documented in these scripts, but are described in the associated paper (e.g. scRNA/miRNA processing steps).
 
 ## Notebooks directory
 
