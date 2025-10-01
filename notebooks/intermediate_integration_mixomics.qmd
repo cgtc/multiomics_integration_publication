@@ -1,5 +1,5 @@
 ---
-title: "Intermediate integration analysis notebook"
+title: "Intermediate integration analysis (MB-sPLS) notebook"
 author: "Joe Oddy"
 lightbox: auto
 execute:

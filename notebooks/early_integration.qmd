@@ -649,6 +649,8 @@ Having assessed the performance of the model, we can train a new model on all th
 
 @fig-feature-importance-top-10 shows the top 10 features with the greatest importance whereas @fig-feature-importance-number-of-features shows the number of features from each modality that have a positive importance. Notably, the modalities with the greatest number of features represented here are the scRNA and O-link, indicating a potential bias due to their greater dimensionality.
 
+The feature importances here are calculated by the permutation method in ranger. More detail about the models used can be seen in the CGTCanalyse package.
+
 ::: panel-tabset
 ### Ranked features
 ```{r}
