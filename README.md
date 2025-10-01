@@ -2,7 +2,11 @@
 
 ## Background
 
-In collaboration with Plasticell, Cell and Gene Therapy Catapult successfully scaled up an NK cell differentiation process with the goal of expanding access to these therapies to more patients. Throughout the differentiation process, samples were taken for single-cell RNA sequencing, proteomics, miRNA sequencing, and LCMS metabolite analysis to better understand the biological changes during the process. 
+In collaboration with Plasticell, Cell and Gene Therapy Catapult successfully scaled up an NK cell differentiation process with the goal of expanding access to these therapies to more patients. Throughout the differentiation process, samples were taken for single-cell RNA sequencing, proteomics, miRNA sequencing, and LCMS metabolite analysis to better understand the biological changes during the process.
+
+Independent analysis of each data modality was performed, but we then aimed to integrate these modalities for a more holistic characterisation of the process. We used the strategies described in [Picard et al. (2021)](https://pubmed.ncbi.nlm.nih.gov/34285775/) as a framework to test different integration strategies.
+
+For the target variable of our modelling, we chose the percentage of NK cells per sample, to identify biomarkers most closely associated with this differentiation process.
 
 ## Repository structure
 
