@@ -45,7 +45,9 @@ The first steps in this notebook are different to those for the early and interm
 
 The same modelling approach was performed for the four different omics - random forest regression assessed by nested cross-validation. Five-fold cross-validation (with repeats) was specified for the "outer fold" (performance) assessment, and three-fold cross validation for the "inner fold" hyperparameter tuning.
 
-A final model was fit on the full data for each omics modality, which was then used to determine feature importances.
+The only hyperparameter tuned was lambda, which controls the strength of the "penalty" for feature selection.
+
+A final model was fit on the full data for each omics modality, which was then used to determine feature importances. In this integration analysis, feature importances are the coefficients from the final glmnet model (those that are above 0 contribute to the model).
 
 ```{r}
 #| label: library-loading
