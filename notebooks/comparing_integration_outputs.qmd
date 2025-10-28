@@ -28,7 +28,7 @@ format:
     fig-height: 5
     fig-width: 8
     fig-responsive: true
-    fig-dpi: 150
+    fig-dpi: 600
     fig-cap-location: top
     number-sections: true
     number-depth: 2
@@ -1272,25 +1272,25 @@ late_integration_top_features_plot_faceted
 #| fig-height: 10
 #| fig-width: 8
 
-nn_feature_importance |> 
-  group_by(branch) |> 
-  arrange(desc(abs(importance))) |> 
-  slice_head(n = 8) |> 
-  ungroup() |> 
-  ggplot(aes(x = reorder(feature, abs(importance)), y = importance)) +
-  facet_wrap(~ branch, scales = "free", ncol = 1) +
-  geom_col() +
-  coord_flip() +
-  theme_catapult() +
-  labs(
-    title = "Intermediate integration",
-    subtitle = "Multi-branch neural network",
-    x = "Feature",
-    y = "Estimate"
-  ) +
-  scale_fill_catapult_d() -> network_top_features_plot_faceted
-
-network_top_features_plot_faceted
+# nn_feature_importance |> 
+#   group_by(branch) |> 
+#   arrange(desc(abs(importance))) |> 
+#   slice_head(n = 8) |> 
+#   ungroup() |> 
+#   ggplot(aes(x = reorder(feature, abs(importance)), y = importance)) +
+#   facet_wrap(~ branch, scales = "free", ncol = 1) +
+#   geom_col() +
+#   coord_flip() +
+#   theme_catapult() +
+#   labs(
+#     title = "Intermediate integration",
+#     subtitle = "Multi-branch neural network",
+#     x = "Feature",
+#     y = "Estimate"
+#   ) +
+#   scale_fill_catapult_d() -> network_top_features_plot_faceted
+# 
+# network_top_features_plot_faceted
 ```
 
 
@@ -1327,7 +1327,7 @@ hierarchical_integration_top_features_horiz
 ### Without hierarchical
 
 ```{r}
-#| label: fig-combined-top-features-plot
+#| label: fig-combined-top-features-plot-without
 #| fig-height: 14
 #| fig-width: 8
 
@@ -1344,7 +1344,7 @@ hierarchical_integration_top_features_horiz
 ### With hierarchical
 
 ```{r}
-#| label: fig-combined-top-features-plot
+#| label: fig-combined-top-features-plot-with
 #| fig-height: 15
 #| fig-width: 10
 
@@ -1362,7 +1362,7 @@ hierarchical_integration_top_features_horiz
 ## Without late
 
 ```{r}
-#| label: fig-combined-top-features-plot
+#| label: fig-combined-top-features-plot-without-lates
 #| fig-height: 10
 #| fig-width: 10
 
@@ -1412,3 +1412,126 @@ common_features_between_integration_methods |>
 ```{r}
 common_features_between_integration_methods
 ```
+
+# Comparing model performance
+
+```{r}
+model_results <- tribble(
+  ~Integration,~Model,~Omics_tested,~R2_percent,~RMSE,
+  "Early","Random forest regression","All",98.7,0.128,
+  "Intermediate","Multi-block sparse PLS","All",78.4,0.175,
+  "Intermediate","Multi-branch neural network","All",97.3,0.038,
+  "Hierarchical","Random forest regression","scRNA and Olink",74.0,0.144,
+  "Late","LASSO regression","LCMS",95.6,0.083,
+  "Late","LASSO regression","miRNA",99.2,0.053,
+  "Late","LASSO regression","Olink",99.9,0.044,
+  "Late","LASSO regression","scRNA",99.9,0.009
+) |> 
+  mutate(exact_model = paste0(Integration, ": ", Model))
+```
+
+```{r}
+r2_plot <- model_results |> 
+  ggplot(aes(x = reorder(exact_model, R2_percent), y = R2_percent, fill = Omics_tested)) +
+  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
+  theme_catapult() +
+  coord_flip() +
+  geom_text(
+    aes(label = paste0(R2_percent)),
+    position = position_dodge2(width = 0.9, preserve = "single"),
+    hjust = -0.1,
+    size = 3.5,
+    colour = "black"
+  ) +
+  labs(
+    x = "",
+    y = "R² (%)"
+  ) +
+  scale_fill_brewer(palette = "Paired") +
+  # make y axis breaks at 0, 25, 50, 100 but give room at end for text
+  scale_y_continuous(breaks = c(0, 25, 50, 75, 100), limits = c(0, 110))
+```
+
+```{r}
+#| fig-height: 4
+#| fig-width: 8
+
+rmse_plot <- model_results |> 
+  ggplot(aes(x = reorder(exact_model, -RMSE), y = RMSE, fill = Omics_tested)) +
+  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
+  theme_catapult() +
+  coord_flip() +
+  geom_text(
+    aes(label = paste0(RMSE)),
+    position = position_dodge2(width = 0.9, preserve = "single"),
+    hjust = -0.1,
+    size = 3.5,
+    colour = "black"
+  ) +
+  labs(
+    x = "",
+    y = "RMSE"
+  ) +
+  scale_fill_brewer(palette = "Paired") +
+  theme(plot.margin = margin(5, 30, 30, 5)) +
+  ylim(0, 0.2)
+```
+
+```{r}
+#| fig-height: 5.5
+#| fig-width: 8
+
+model_results |> 
+  pivot_longer(
+    cols = c(R2_percent, RMSE),
+    names_to = "metric",
+    values_to = "value"
+  ) |>
+  mutate(metric = recode(metric,
+    "R2_percent" = "R² (%)",
+    "RMSE" = "RMSE"
+  )) |>
+  ggplot(aes(x = exact_model, y = value, fill = Omics_tested)) +
+  facet_grid(~ metric, scales = "free") +
+  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
+  theme_catapult() +
+  coord_flip() +
+  geom_text(
+    aes(label = paste0(value)),
+    position = position_dodge2(width = 0.9, preserve = "single"),
+    hjust = -0.1,
+    size = 3.5,
+    colour = "black"
+  ) +
+  labs(x = "", y = "") +
+  scale_fill_brewer(palette = "Paired", name = "Omics tested") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  theme(
+    plot.margin = margin(5, 30, 30, 5),
+    legend.position = "bottom",
+    legend.justification = "center",
+    legend.box.just = "center",
+    legend.box = "horizontal",
+    legend.title = element_text(hjust = 0.5),
+    legend.title.position = "top"
+  )
+
+```
+
+
+```{r}
+#| fig-height: 10
+#| fig-width: 8
+
+# combine with patchwork
+r2_plot / rmse_plot +
+  plot_layout(guides = "collect") &
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+```
+
+
+
+
+
+
