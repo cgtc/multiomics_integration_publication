@@ -1113,6 +1113,39 @@ all_feature_importances |>
 ```
 
 
+```{r}
+#| label: fig-combined-feature-importance-plot-title
+#| fig-height: 5
+#| fig-width: 8
+
+all_feature_importances |> 
+  # replace all in omics with pathway
+  mutate(omics = ifelse(omics == "All", "Pathway", omics)) |>
+  # replace lcms with LCMS
+  mutate(omics = ifelse(omics == "lcms", "LCMS", omics)) |>
+  group_by(integration, omics) |> 
+  summarise(n_features = n()) |> 
+  ggplot(aes(x = reorder(integration, n_features), y = n_features, fill = omics)) +
+  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
+  theme_catapult() +
+  coord_flip() +
+  geom_text(
+    aes(label = n_features),
+    position = position_dodge2(width = 0.9, preserve = "single"),
+    hjust = -0.2,
+    size = 3.5,
+    colour = "black"
+  ) +
+  labs(
+    x = "",
+    y = "# of features exceeding importance threshold",
+    title = "Candidate biomarkers identified by integrated analysis",
+    subtitle = "Features important for predicting NK cells (%) in sample"
+  ) +
+  scale_fill_catapult_d() +
+  theme(plot.margin = margin(5, 30, 30, 5)) +
+  scale_fill_brewer(palette = "Paired")
+```
 
 
 # Important features - details
@@ -1504,6 +1537,51 @@ model_results |>
     colour = "black"
   ) +
   labs(x = "", y = "") +
+  scale_fill_brewer(palette = "Paired", name = "Omics tested") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  theme(
+    plot.margin = margin(5, 30, 30, 5),
+    legend.position = "bottom",
+    legend.justification = "center",
+    legend.box.just = "center",
+    legend.box = "horizontal",
+    legend.title = element_text(hjust = 0.5),
+    legend.title.position = "top"
+  )
+
+```
+
+
+```{r}
+#| fig-height: 5.5
+#| fig-width: 8
+
+model_results |> 
+  pivot_longer(
+    cols = c(R2_percent, RMSE),
+    names_to = "metric",
+    values_to = "value"
+  ) |>
+  mutate(metric = recode(metric,
+    "R2_percent" = "R² (%)",
+    "RMSE" = "RMSE"
+  )) |>
+  ggplot(aes(x = exact_model, y = value, fill = Omics_tested)) +
+  facet_grid(~ metric, scales = "free") +
+  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
+  theme_catapult() +
+  coord_flip() +
+  geom_text(
+    aes(label = paste0(value)),
+    position = position_dodge2(width = 0.9, preserve = "single"),
+    hjust = -0.1,
+    size = 3.5,
+    colour = "black"
+  ) +
+  labs(x = "", 
+       y = "",
+       title = "Model performance metrics",
+       subtitle = "Target variable: NK cells (%) in sample") +
   scale_fill_brewer(palette = "Paired", name = "Omics tested") +
   scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
   theme(
