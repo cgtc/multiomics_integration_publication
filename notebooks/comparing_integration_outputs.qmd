@@ -1143,8 +1143,10 @@ all_feature_importances |>
     subtitle = "Features important for predicting NK cells (%) in sample"
   ) +
   scale_fill_catapult_d() +
-  theme(plot.margin = margin(5, 30, 30, 5)) +
-  scale_fill_brewer(palette = "Paired")
+  theme(plot.margin = margin(5, 30, 30, 5),
+        legend.title.position = "left") +
+  scale_fill_brewer(palette = "Paired", name = "Feature type") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.3)))
 ```
 
 
@@ -1538,7 +1540,7 @@ model_results |>
   ) +
   labs(x = "", y = "") +
   scale_fill_brewer(palette = "Paired", name = "Omics tested") +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.3))) +
   theme(
     plot.margin = margin(5, 30, 30, 5),
     legend.position = "bottom",
@@ -1583,15 +1585,15 @@ model_results |>
        title = "Model performance metrics",
        subtitle = "Target variable: NK cells (%) in sample") +
   scale_fill_brewer(palette = "Paired", name = "Omics tested") +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.3))) +
+  guides(fill = guide_legend(nrow = 1)) +
   theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
     plot.margin = margin(5, 30, 30, 5),
-    legend.position = "bottom",
-    legend.justification = "center",
-    legend.box.just = "center",
-    legend.box = "horizontal",
+    legend.position = c(-0.1, -0.15),  # negative y moves it outside plotting panel
+    legend.justification = c(0.4, 1.2),
     legend.title = element_text(hjust = 0.5),
-    legend.title.position = "top"
+    legend.title.position = "left"
   )
 
 ```
