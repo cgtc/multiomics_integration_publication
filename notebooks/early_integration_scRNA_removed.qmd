@@ -205,11 +205,6 @@ combined_data <- lcms_data |>
     wide_olink |>
       select(!c(run:day, omics:DF)),
     by = "label", suffix = c("_miRNA", "_olink")
-  ) |>
-  full_join(
-    scRNA_data_wide |>
-      select(!c(run, vessel, day, omics)),
-    by = "label", suffix = c("_olink", "_scRNA")
   )
 
 combined_data_names <- names(combined_data) |> 
@@ -546,6 +541,7 @@ rf_data <- combined_data |>
   left_join(nk_cells_proportions_subset |> 
       select(label, proportion_NK),
     by = "label") |> 
+  drop_na(proportion_NK) |>
   select(-label) |> 
   # add grouping variable for proportion_NK for stratification
   mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 

@@ -1,0 +1,40 @@
+---
+title: "Untitled"
+format: html
+---
+
+
+```{r}
+library(here)
+library(tidyverse)
+```
+
+
+```{r}
+run_3_metadata <- readRDS(here("00_data", "run3_metadata_post_qc.rds"))
+
+# calculate percentage_nk_cells for each sample. hpca.main provides cell identity (e.g. NK cells, etc...). sample_aliqout_id is probably best sample identifier
+
+nk_cell_percentages <- run_3_metadata |> 
+  group_by(sample_aliquot_id) |> 
+  summarise(total_cells = n(),
+            nk_cells = sum(hpca.main == "NK_cell"),
+            proportion_nk_cells = (nk_cells / total_cells),
+            vessel = unique(vessel),
+            day = unique(day),
+            replicate = unique(replicate))
+
+nk_cell_percentages_averaged <- nk_cell_percentages |> 
+  group_by(vessel, day) |> 
+  summarise(proportion_NK = mean(proportion_nk_cells)) |> 
+  filter(!day == 0) |>  # remove day 0 since it is not relevant for the analysis
+  ungroup()
+
+run_3_nk_export <- nk_cell_percentages_averaged |> 
+  mutate(vessel_day = paste0(vessel, "_D", day)) |> 
+  select(vessel_day, proportion_NK)
+
+if (!file.exists(here("00_data", "nk_cell_percentages_run_3.csv"))) {
+  write_csv(run_3_nk_export, here("00_data", "nk_cell_percentages_run_3.csv"))
+}
+```
