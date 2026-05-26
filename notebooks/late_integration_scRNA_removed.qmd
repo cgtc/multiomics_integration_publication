@@ -1,5 +1,5 @@
 ---
-title: "Early integration analysis notebook"
+title: "Late integration analysis notebook"
 author: "Joseph Oddy"
 lightbox: auto
 execute:
@@ -39,9 +39,15 @@ format:
     embed-resources: true
 ---
 
-# Data loading/processing
+# Data processing and modelling approach
 
-The first steps in this notebook load the necessary libraries, source the data acquisition script, and process the data. This involves some separate processing of the different data modalities (e.g. scaling) before combining them into a single large matrix with the target variable (% of NK cells in sample) appended to this.
+The first steps in this notebook are different to those for the early and intermediate integration analyses, because the different omics are analysed separately so we don't need to keep only those samples which have data for all omics.
+
+The same modelling approach was performed for the four different omics - random forest regression assessed by nested cross-validation. Five-fold cross-validation (with repeats) was specified for the "outer fold" (performance) assessment, and three-fold cross validation for the "inner fold" hyperparameter tuning.
+
+The only hyperparameter tuned was lambda, which controls the strength of the "penalty" for feature selection.
+
+A final model was fit on the full data for each omics modality, which was then used to determine feature importances. In this integration analysis, feature importances are the coefficients from the final glmnet model (those that are above 0 contribute to the model).
 
 ```{r}
 #| label: library-loading
@@ -50,12 +56,17 @@ library(tidyverse)
 library(here)
 library(aqua)
 library(umap)
+library(mixOmics)
+# mixKernel has quite a few dependencies, see mixKernel installation guide
+library(mixKernel)
 library(conflicted)
 library(janitor)
 library(gt)
 library(ggrepel)
 library(kernlab)
 library(feather)
+library(UpSetR)
+library(ComplexUpset)
 library(arrow)
 library(patchwork)
 library(tidymodels)
@@ -71,7 +82,9 @@ conflicts_prefer(aqua::rescale)
 conflicts_prefer(ComplexUpset::upset)
 conflicts_prefer(vip::vip)
 conflicted::conflicts_prefer(purrr::map)
+conflicted::conflicts_prefer(tidyr::expand)
 conflicts_prefer(base::as.factor)
+conflicts_prefer(arrow::write_feather)
 
 #load(here("00_data/early_integration_NK_percentage_modelling_environment.RData"))
 ```
@@ -155,7 +168,6 @@ wide_olink <- long_olink |>
   relocate(run, day)
 ```
 
-
 ```{r}
 #| label: miRNA-data-loading
 
@@ -205,6 +217,11 @@ combined_data <- lcms_data |>
     wide_olink |>
       select(!c(run:day, omics:DF)),
     by = "label", suffix = c("_miRNA", "_olink")
+  ) |>
+  full_join(
+    scRNA_data_wide |>
+      select(!c(run, vessel, day, omics)),
+    by = "label", suffix = c("_olink", "_scRNA")
   )
 
 combined_data_names <- names(combined_data) |> 
@@ -465,20 +482,16 @@ run_3_nk_cells_proportions <- read.csv(here("00_data/nk_cell_percentages_run_3.c
     label = paste0("r3_v", vessel, "_d", day)
   )
 
-run_3_nk_cells_proportions_subset <- run_3_nk_cells_proportions |>
-  filter(label %in% common_samples$label) |>
-  arrange(label)
-
-run_3_nk_cells_target <- run_3_nk_cells_proportions_subset |>
+run_3_nk_cells_target <- run_3_nk_cells_proportions |>
   column_to_rownames("label") |>
   select(proportion_NK) |>
   as.matrix()
 ```
 
 ```{r}
-#| label: loading-nk-cell-proportion-data-run4
+#| label: loading-nk-cell-proportion-data
 
-nk_cells_proportions <- read.csv(here("00_data/nk_cell_proportions_run_4.csv")) |>
+run_4_nk_cells_proportions <- read.csv(here("00_data/nk_cell_proportions_run_4.csv")) |>
   mutate(
     vessel_day = as.character(vessel_day),
     vessel = as.numeric(sub("V(\\d+)_D\\d+", "\\1", vessel_day)),
@@ -486,11 +499,19 @@ nk_cells_proportions <- read.csv(here("00_data/nk_cell_proportions_run_4.csv")) 
     label = paste0("r4_v", vessel, "_d", day)
   )
 
-nk_cells_proportions_subset <- nk_cells_proportions |>
-  filter(label %in% common_samples$label) |>
+run_4_nk_cells_target <- run_4_nk_cells_proportions_subset |>
+  column_to_rownames("label") |>
+  select(proportion_NK) |>
+  as.matrix()
+```
+
+```{r}
+# combine run 3 and run 4 NK cell percentage data
+
+nk_cells_proportions <- bind_rows(run_3_nk_cells_proportions, run_4_nk_cells_proportions) |>
   arrange(label)
 
-nk_cells_target <- nk_cells_proportions_subset |>
+nk_cells_target <- nk_cells_proportions |>
   column_to_rownames("label") |>
   select(proportion_NK) |>
   as.matrix()
@@ -513,7 +534,6 @@ nk_cells_proportions_category_data <- nk_cells_proportions |>
     "50 - 75% NKs",
     "> 75% NKs"
   )) |>
-  filter(label %in% common_samples$label) |>
   arrange(label) |>
   select(-X)
 
@@ -529,39 +549,45 @@ nk_cells_proportions_category <- nk_cells_proportions_category_data |>
 list2env(processed_process_data, envir = .GlobalEnv)
 ```
 
-# Nested cross-validation of random forest model
+# O-link modelling
 
-The model used here to test the early integration method is a random forest regression model. Nested cross-validation is used to assess the performance of the model, with an outer loop for performance assessment and an inner loop for hyperparameter tuning.
+Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-olink and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-olink. Feature importances are shown in @fig-olink-feature-importance.
 
 ```{r}
-#| label: rf-data-object
-
-rf_data <- combined_data |> 
-  drop_na() |> 
-  left_join(nk_cells_proportions_subset |> 
+mlp_olink_data <- wide_olink |> 
+  left_join(nk_cells_proportions |> 
       select(label, proportion_NK),
     by = "label") |> 
-  drop_na(proportion_NK) |>
-  select(-label) |> 
-  # add grouping variable for proportion_NK for stratification
-  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
-  relocate(proportion_NK, proportion_NK_quartile)
+  relocate(label, proportion_NK) |> 
+  drop_na() |> 
+  select(!proportion_NK:DF)
+
+if(!file.exists(here("00_data/late_integration_data/olink_data_modelling.feather"))){
+  write_feather(mlp_olink_data, here("00_data/late_integration_data/olink_data_modelling.feather"))
+}
 ```
 
-
 ```{r}
-#| label: nested-rf-regression
+#| label: olink-nested-lasso
 
-nested_rf_results <- nested_rf_regression(
-  data = rf_data,
+olink_data_modelling <- wide_olink |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(proportion_NK) |> 
+  drop_na() |> 
+  select(!run:DF) |> 
+  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
+  relocate(proportion_NK, proportion_NK_quartile)
+
+olink_lasso_results <- nested_lasso_regression(
+  data = olink_data_modelling,
   target_variable = "proportion_NK",
   seed = 89,
-  trees = 100,
-  mtry_range = c(1, 15),
-  min_n_range = c(2, 20),
+  penalty_range = c(-4, 0),
   levels = 4,
   outer_folds = 5,
-  outer_repeats = 5,
+  outer_repeats = 10,
   inner_folds = 3,
   final_tune_folds = 5,
   metric = "rmse",
@@ -571,14 +597,13 @@ nested_rf_results <- nested_rf_regression(
 
 ## Model assessment
 
-Five-fold cross-validation was specified for the "outer fold" (performance) assessment. The results are shown in @tbl-nested-rf-regression-metrics and @fig-random-forest-regression-truth-vs-predicted. The model has a very high R2, indicating that it explains the variance well. The RMSE is not as good, indicating that the estimates are a little off although they still explain the variance well.
-
 ::: panel-tabset
 ### Model metrics - overall
-```{r}
-#| label: tbl-nested-rf-regression-metrics-overall
 
-nested_rf_results_summary <- nested_rf_results$outer_performance |>
+```{r}
+#| label: tbl-nested-rf-regression-metrics-overall-olink
+
+olink_lasso_results_summary <- olink_lasso_results$outer_performance |>
   unnest(cols = fold) |> 
   group_by(.metric) |> 
   summarise(
@@ -587,7 +612,7 @@ nested_rf_results_summary <- nested_rf_results$outer_performance |>
     sd_estimate = sd(.estimate, na.rm = TRUE)
   )
 
-nested_rf_results_summary
+olink_lasso_results_summary |> 
   gt() |>
   opt_interactive(
     use_search = TRUE,
@@ -602,18 +627,18 @@ nested_rf_results_summary
     title = md("Nested Random Forest Regression Metrics - Overall")
   )
 
-if(!here("00_data/early_integration_metrics_scRNA_removed.rds") |> 
-   file.exists()) {
-  write_rds(nested_rf_results_summary, here("00_data/early_integration_metrics_scRNA_removed.rds"))
+if (!here("00_data/late_integration_metrics_olink_run3_added.rds") |> 
+    file.exists()) {
+  write_rds(olink_lasso_results_summary, here("00_data/late_integration_metrics_olink_run3_added.rds"))
 }
 ```
 
-
 ### Model metrics - each fold
-```{r}
-#| label: tbl-nested-rf-regression-metrics
 
-nested_rf_results$outer_performance |>
+```{r}
+#| label: tbl-nested-rf-regression-metrics-olink
+
+olink_lasso_results$outer_performance |>
   unnest(cols = fold) |> 
   gt() |>
   opt_interactive(
@@ -628,16 +653,15 @@ nested_rf_results$outer_performance |>
   tab_header(
     title = md("Nested Random Forest Regression Metrics")
   )
-
-
 ```
 
 ### Plotting true vs. predicted values
+
 ```{r}
-#| label: fig-random-forest-regression-truth-vs-predicted
+#| label: fig-random-forest-regression-truth-vs-predicted-olink
 #| fig-cap: Random forest regression model truth vs. predictions
 
-ggplot(nested_rf_results$outer_performance |>
+ggplot(olink_lasso_results$outer_performance |>
   unnest(cols = fold),
   aes(x = .metric, y = .estimate)) +
     geom_boxplot() +
@@ -649,9 +673,9 @@ ggplot(nested_rf_results$outer_performance |>
 ## Final model - parameters
 
 ```{r}
-#| label: tbl-nested-rf-regression-final-model-parameters
+#| label: tbl-nested-rf-regression-final-model-parameters-olink
 
-nested_rf_results$final_model$fit$fit$spec$args |>
+olink_lasso_results$final_model$fit$fit$spec$args |>
   map(eval_tidy) |>
   {\(x) tibble(parameter = names(x), value = as.character(x))}() |> 
   gt() |>
@@ -669,142 +693,391 @@ nested_rf_results$final_model$fit$fit$spec$args |>
   )
 ```
 
-
 ## Feature importance
 
-Having assessed the performance of the model, we can train a new model on all the data. We perform another grid-search and cross-validation to select the best hyperparameters from all the data. Feature importances are then extracted from this model that was trained on all the data. Importantly, this model is not used to assess the performance of the model, only for the feature importances.
-
-@fig-feature-importance-top-10 shows the top 10 features with the greatest importance whereas @fig-feature-importance-number-of-features shows the number of features from each modality that have a positive importance. Notably, the modalities with the greatest number of features represented here are the scRNA and O-link, indicating a potential bias due to their greater dimensionality.
-
-The feature importances here are calculated by the permutation method in ranger. More detail about the models used can be seen in the CGTCanalyse package.
-
-::: panel-tabset
-### Ranked features
 ```{r}
-feature_importances <- nested_rf_results$final_model |>
-  extract_fit_parsnip() |>
-  (\(x) x$fit$variable.importance)() |>
-  enframe(name = "feature", value = "importance") |>
-  arrange(desc(importance))
-
-lcms_features <- lcms_data |>
-  select(!omics:vessel) |> 
-  names() |> 
-  as_tibble() |> 
-  rename(feature = "value") |> 
-  mutate(omics = "lcms")
-
-miRNA_features <- miRNA_data_scaled |>
-  select(!omics:run) |> 
-  names() |> 
-  as_tibble() |> 
-  rename(feature = "value") |> 
-  mutate(omics = "miRNA")
-
-olink_features <- wide_olink |>
-  select(!run:DF) |> 
-  names() |> 
-  as_tibble() |> 
-  rename(feature = "value") |> 
-  mutate(omics = "olink")
-
-scRNA_features <- scRNA_data_wide |>
-  select(!run:omics) |> 
-  names() |> 
-  as_tibble() |> 
-  rename(feature = "value") |> 
-  mutate(omics = "scRNA")
-
-all_features <- bind_rows(
-  lcms_features,
-  miRNA_features,
-  olink_features
-)
-
-feature_importances_annotated <- feature_importances |> 
-  left_join(all_features, by = "feature") |> 
-  mutate(omics = case_when(
-    str_detect(feature, "lcms") ~ "lcms",
-    str_detect(feature, "miRNA") ~ "miRNA",
-    str_detect(feature, "olink") ~ "olink",
-    str_detect(feature, "scRNA") ~ "scRNA",
-    TRUE ~ omics
-  )) |> 
-  mutate(feature = str_remove(feature, "_lcms|_miRNA|_olink|_scRNA"))
+olink_feature_coefficients <- tidy(olink_lasso_results$final_model) |> 
+  filter(estimate != 0) |> 
+  arrange(desc(abs(estimate)))
 ```
 
 ```{r}
-#| label: fig-feature-importance-top-10
+#| label: fig-olink-feature-importance
 #| fig-height: 4
 #| fig-width: 8
 
-ggplot(feature_importances_annotated |> 
-         arrange(-importance) |> 
-         slice_head(n = 12), aes(x = fct_reorder(feature, importance), y = importance, fill = omics)) +
+ggplot(olink_feature_coefficients |> 
+         filter(!term == "(Intercept)"),
+       aes(x = fct_reorder(term, estimate), y = estimate)) +
   geom_col() +
   coord_flip() +
   theme_catapult() +
   labs(
-    title = "Feature importance",
-    subtitle = "Top 12 features with greatest importance",
+    title = "Retained features",
+    subtitle = "Features with non-zero coefficients",
     x = "Feature",
     y = "Importance"
   ) +
   scale_fill_catapult_d()
 ```
 
-### Number of features from each modality
-```{r}
-#| label: fig-feature-importance-number-of-features
-#| fig-width: 8
-#| fig-height: 3
+# miRNA modelling
 
-if(!here("00_data/feature_importances/early_integration_feature_importances.rds") |> 
-   file.exists()) {
-  write_rds(feature_importances_annotated, here("00_data/feature_importances/early_integration_feature_importances.rds"))
+Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-mirna and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-mirna. Feature importances are shown in @fig-mirna-feature-importance.
+
+```{r}
+mlp_mirna_data <- miRNA_data_scaled |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(label, proportion_NK) |> 
+  drop_na() |> 
+  select(!proportion_NK:run)
+
+if(!file.exists(here("00_data/late_integration_data/mirna_data_modelling.feather"))){
+  write_feather(mlp_mirna_data, here("00_data/late_integration_data/mirna_data_modelling.feather"))
 }
+```
 
-feature_importances_annotated |> 
-  filter(importance > 0) |> 
-  group_by(omics) |> 
-  summarise(n_features = n()) |> 
-  ggplot(aes(x = reorder(omics, n_features), y = n_features)) +
-  geom_col() +
-  theme_catapult() +
-  coord_flip() +
-  geom_text(
-    aes(label = n_features),
-    hjust = -0.5,
-    size = 3.5,
-    colour = "black"
-  ) +
-  labs(
-    title = "Number of features with positive importance",
-    subtitle = "Early integration - random forest regression model",
-    x = "Omics",
-    y = "Number of features"
+```{r}
+#| label: mirna-nested-lasso
+
+mirna_data_modelling <- miRNA_data_scaled |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(proportion_NK) |> 
+  drop_na() |> 
+  select(!omics:run) |> 
+  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
+  relocate(proportion_NK, proportion_NK_quartile)
+
+mirna_lasso_results <- nested_lasso_regression(
+  data = mirna_data_modelling,
+  target_variable = "proportion_NK",
+  seed = 89,
+  penalty_range = c(-4, 0),
+  levels = 4,
+  outer_folds = 5,
+  outer_repeats = 10,
+  inner_folds = 3,
+  final_tune_folds = 5,
+  metric = "rmse",
+  strata = "proportion_NK_quartile"
+)
+```
+
+## Model assessment
+
+::: panel-tabset
+### Model metrics - overall
+
+```{r}
+#| label: tbl-nested-rf-regression-metrics-overall-mirna
+
+mirna_lasso_results_summary <- mirna_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  group_by(.metric) |> 
+  summarise(
+    mean_estimate = mean(.estimate, na.rm = TRUE),
+    median_estimate = median(.estimate, na.rm = TRUE),
+    sd_estimate = sd(.estimate, na.rm = TRUE)
   )
-  
+
+mirna_lasso_results_summary |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics - Overall")
+  )
+
+if (!here("00_data/late_integration_metrics_mirna_run3_added.rds") |> 
+    file.exists()) {
+  write_rds(mirna_lasso_results_summary, here("00_data/late_integration_metrics_mirna_run3_added.rds"))
+}
 ```
 
-### Distribution of feature importances
+### Model metrics - each fold
+
 ```{r}
-ggplot(feature_importances_annotated |> 
-         filter(importance > 0),
-       aes(x = importance)) +
-  geom_histogram(bins = 50) +
-  facet_wrap(~ omics, scales = "free_y") +
-  theme_catapult()
+#| label: tbl-nested-rf-regression-metrics-mirna
+
+mirna_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics")
+  )
 ```
 
-### Distribution of negative importances
+### Plotting true vs. predicted values
+
 ```{r}
-ggplot(feature_importances_annotated |> 
-         filter(importance < 0),
-       aes(x = importance)) +
-  geom_histogram(bins = 50) +
-  facet_wrap(~ omics, scales = "free_y") +
+#| label: fig-random-forest-regression-truth-vs-predicted-mirna
+#| fig-cap: Random forest regression model truth vs. predictions
+
+ggplot(mirna_lasso_results$outer_performance |>
+  unnest(cols = fold),
+  aes(x = .metric, y = .estimate)) +
+    geom_boxplot() +
+  facet_wrap(~ .metric, scales = "free") +
   theme_catapult()
 ```
 :::
 
+## Final model - parameters
+
+```{r}
+#| label: tbl-nested-rf-regression-final-model-parameters-mirna
+
+mirna_lasso_results$final_model$fit$fit$spec$args |>
+  map(eval_tidy) |>
+  {\(x) tibble(parameter = names(x), value = as.character(x))}() |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Final model - selected parameters")
+  )
+```
+
+## Feature importance
+
+
+```{r}
+mirna_feature_coefficients <- tidy(mirna_lasso_results$final_model) |> 
+  filter(estimate != 0) |> 
+  arrange(desc(abs(estimate)))
+```
+
+```{r}
+#| label: fig-mirna-feature-importance
+#| fig-height: 4
+#| fig-width: 8
+
+ggplot(mirna_feature_coefficients |> 
+         filter(!term == "(Intercept)"),
+       aes(x = fct_reorder(term, estimate), y = estimate)) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Retained features",
+    subtitle = "Features with non-zero coefficients",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  scale_fill_catapult_d()
+```
+
+# LCMS modelling
+
+Overall model metrics are shown in @tbl-nested-rf-regression-metrics-overall-lcms and predicted vs. true values are shown in @fig-random-forest-regression-truth-vs-predicted-lcms. Feature importances are shown in @fig-lcms-feature-importance.
+
+```{r}
+mlp_lcms_data <- lcms_data |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(label, proportion_NK) |> 
+  drop_na() |> 
+  select(!proportion_NK:vessel)
+
+if(!file.exists(here("00_data/late_integration_data/lcms_data_modelling.feather"))){
+  write_feather(mlp_lcms_data, here("00_data/late_integration_data/lcms_data_modelling.feather"))
+}
+```
+
+
+```{r}
+#| label: lcms-nested-lasso
+
+lcms_data_modelling <- lcms_data |> 
+  left_join(nk_cells_proportions |> 
+      select(label, proportion_NK),
+    by = "label") |> 
+  relocate(proportion_NK) |> 
+  drop_na() |> 
+  select(!omics:vessel) |> 
+  mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
+  relocate(proportion_NK, proportion_NK_quartile)
+
+lcms_lasso_results <- nested_lasso_regression(
+  data = lcms_data_modelling,
+  target_variable = "proportion_NK",
+  seed = 89,
+  penalty_range = c(-4, 0),
+  levels = 4,
+  outer_folds = 5,
+  outer_repeats = 10,
+  inner_folds = 3,
+  final_tune_folds = 5,
+  metric = "rmse",
+  strata = "proportion_NK_quartile"
+)
+```
+
+## Model assessment
+
+::: panel-tabset
+### Model metrics - overall
+
+```{r}
+#| label: tbl-nested-rf-regression-metrics-overall-lcms
+
+lcms_lasso_results_summary <- lcms_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  group_by(.metric) |> 
+  summarise(
+    mean_estimate = mean(.estimate, na.rm = TRUE),
+    median_estimate = median(.estimate, na.rm = TRUE),
+    sd_estimate = sd(.estimate, na.rm = TRUE)
+  )
+
+lcms_lasso_results_summary |>
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics - Overall")
+  )
+
+if (!here("00_data/late_integration_metrics_lcms_run3_added.rds") |> 
+    file.exists()) {
+  write_rds(lcms_lasso_results_summary, here("00_data/late_integration_metrics_lcms_run3_added.rds"))
+}
+```
+
+### Model metrics - each fold
+
+```{r}
+#| label: tbl-nested-rf-regression-metrics-lcms
+
+lcms_lasso_results$outer_performance |>
+  unnest(cols = fold) |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Nested Random Forest Regression Metrics")
+  )
+```
+
+### Plotting true vs. predicted values
+
+```{r}
+#| label: fig-random-forest-regression-truth-vs-predicted-lcms
+#| fig-cap: Random forest regression model truth vs. predictions
+
+ggplot(lcms_lasso_results$outer_performance |>
+  unnest(cols = fold),
+  aes(x = .metric, y = .estimate)) +
+    geom_boxplot() +
+  facet_wrap(~ .metric, scales = "free") +
+  theme_catapult()
+```
+:::
+
+## Final model - parameters
+
+```{r}
+#| label: tbl-nested-rf-regression-final-model-parameters-lcms
+
+lcms_lasso_results$final_model$fit$fit$spec$args |>
+  map(eval_tidy) |>
+  {\(x) tibble(parameter = names(x), value = as.character(x))}() |> 
+  gt() |>
+  opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  ) |>
+  tab_header(
+    title = md("Final model - selected parameters")
+  )
+```
+
+## Feature importance
+
+```{r}
+lcms_feature_coefficients <- tidy(lcms_lasso_results$final_model) |> 
+  filter(estimate != 0) |> 
+  arrange(desc(abs(estimate))) |> 
+  filter(!term == "(Intercept)")
+```
+
+```{r}
+#| label: fig-lcms-feature-importance
+#| fig-height: 4
+#| fig-width: 8
+
+ggplot(lcms_feature_coefficients,
+       aes(x = fct_reorder(term, estimate), y = estimate)) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Retained features",
+    subtitle = "Features with non-zero coefficients",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  scale_fill_catapult_d()
+```
+
+# Export feature importances
+
+```{r}
+all_feature_importances <- bind_rows(
+  olink = olink_feature_coefficients |> mutate(omics = "olink"),
+  mirna = mirna_feature_coefficients |> mutate(omics = "miRNA"),
+  lcms = lcms_feature_coefficients |> mutate(omics = "lcms"),
+  .id = "data_type"
+)
+
+if(!file.exists(here("00_data/feature_importances/late_integration_feature_importances_run3_added.rds"))){
+  write_rds(all_feature_importances, here("00_data/feature_importances/late_integration_feature_importances_run3_added.rds"))
+}
+```

@@ -198,6 +198,11 @@ combined_data <- lcms_data |>
     wide_olink |>
       select(!c(run:day, omics:DF)),
     by = "label"
+  ) |> 
+  full_join(
+    scRNA_data_wide |>
+      select(!c(run, vessel, day, omics)),
+    by = "label"
   )
 
 combined_metadata <- lcms_data |>
@@ -646,7 +651,7 @@ all_pairwise_correlations |>
 
 The model design was as follows:
 
-* Design matrix specifying correlations of 0.8 between modalities (based on the pairwise sPLS models).
+* Design matrix specifying correlations of 0.9 between modalities (based on the pairwise sPLS models).
 
 * The other hyperparameters (number of components and number of features from each omics) were arbitrarily chosen by tuning of a block.splsda (classification) model (described in greater detail below).
 
@@ -656,7 +661,7 @@ The block sPLS model implemented here does not have built-in capacity for tuning
 #| label: mixomics-splsda-initial-model
 #| output: FALSE
 
-diff_splsda_design <- matrix(0.8,
+diff_splsda_design <- matrix(0.9,
   ncol = length(multiomics_list_train), nrow = length(multiomics_list_train),
   dimnames = list(names(multiomics_list_train), names(multiomics_list_train))
 )
@@ -797,7 +802,7 @@ results_df <- bind_rows(lapply(results, function(x) {
   )
 }))
 
-results_df |>
+results_df_summarised <- results_df |>
   summarise(
     mean_R2 = mean(proportion_NK),
     sd_R2 = sd(proportion_NK),
@@ -805,7 +810,9 @@ results_df |>
     sd_RMSE = sd(RMSE),
     mean_MAE = mean(MAE),
     sd_MAE = sd(MAE)
-  ) |> 
+  )
+
+results_df_summarised |>
   gt() |> 
   opt_interactive(
     use_search = TRUE,
@@ -819,6 +826,10 @@ results_df |>
   tab_header(
     title = md("Performance metrics")
   )
+
+if (!file.exists(here("00_data/diablo_summary_metrics_scRNA_removed.rds"))) {
+  write_rds(results_df_summarised, here("00_data/diablo_summary_metrics_scRNA_removed.rds"))
+}
 ```
 
 ## Performance metrics - figure
