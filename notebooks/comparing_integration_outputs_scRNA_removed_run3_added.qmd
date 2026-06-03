@@ -1334,25 +1334,25 @@ late_integration_top_features_plot_faceted
 #| fig-height: 10
 #| fig-width: 8
 
-# nn_feature_importance |> 
-#   group_by(branch) |> 
-#   arrange(desc(abs(importance))) |> 
-#   slice_head(n = 8) |> 
-#   ungroup() |> 
-#   ggplot(aes(x = reorder(feature, abs(importance)), y = importance)) +
-#   facet_wrap(~ branch, scales = "free", ncol = 1) +
-#   geom_col() +
-#   coord_flip() +
-#   theme_catapult() +
-#   labs(
-#     title = "Intermediate integration",
-#     subtitle = "Multi-branch neural network",
-#     x = "Feature",
-#     y = "Estimate"
-#   ) +
-#   scale_fill_catapult_d() -> network_top_features_plot_faceted
-# 
-# network_top_features_plot_faceted
+nn_feature_importance |> 
+  group_by(omics) |> 
+  arrange(desc(abs(importance))) |> 
+  slice_head(n = 8) |> 
+  ungroup() |> 
+  ggplot(aes(x = reorder(feature, abs(importance)), y = importance)) +
+  facet_wrap(~ omics, scales = "free", ncol = 1) +
+  geom_col() +
+  coord_flip() +
+  theme_catapult() +
+  labs(
+    title = "Intermediate integration",
+    subtitle = "Multi-branch neural network",
+    x = "Feature",
+    y = "Estimate"
+  ) +
+  scale_fill_catapult_d() -> network_top_features_plot_faceted
+
+network_top_features_plot_faceted
 ```
 
 
@@ -1642,60 +1642,22 @@ all_model_metrics_wider <- all_model_metrics |>
   )) |> 
   mutate(metric_and_statistic = paste(metric, statistic, sep = "_")) |>
   select(-metric, -statistic) |>
-  pivot_wider(names_from = metric_and_statistic, values_from = value)
+  pivot_wider(names_from = metric_and_statistic, values_from = value) |> 
+  # round the numbers to 3 significant figures and make RMSE scale to % * 100
+  mutate(
+    R2_mean = round(R2_mean * 100, 1),
+    RMSE_mean = round(RMSE_mean * 100, 1),
+    R2_sd = round(R2_sd * 100, 1),
+    RMSE_sd = round(RMSE_sd * 100, 1)
+  )
 ```
 
-```{r}
-r2_plot <- all_model_metrics_wider |> 
-  ggplot(aes(x = reorder(model, R2_mean), y = R2_mean, fill = Omics_tested)) +
-  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
-  theme_catapult() +
-  coord_flip() +
-  geom_text(
-    aes(label = paste0(R2_mean)),
-    position = position_dodge2(width = 0.9, preserve = "single"),
-    hjust = -0.1,
-    size = 3.5,
-    colour = "black"
-  ) +
-  labs(
-    x = "",
-    y = "R² (%)"
-  ) +
-  scale_fill_brewer(palette = "Paired") +
-  # make y axis breaks at 0, 25, 50, 100 but give room at end for text
-  scale_y_continuous(breaks = c(0, 25, 50, 75, 100), limits = c(0, 110))
-```
-
-```{r}
-#| fig-height: 4
-#| fig-width: 8
-
-rmse_plot <- all_model_metrics_wider |> 
-  ggplot(aes(x = reorder(model, -RMSE_mean), y = RMSE_mean, fill = Omics_tested)) +
-  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
-  theme_catapult() +
-  coord_flip() +
-  geom_text(
-    aes(label = paste0(RMSE_mean)),
-    position = position_dodge2(width = 0.9, preserve = "single"),
-    hjust = -0.1,
-    size = 3.5,
-    colour = "black"
-  ) +
-  labs(
-    x = "",
-    y = "RMSE"
-  ) +
-  scale_fill_brewer(palette = "Paired") +
-  theme(plot.margin = margin(5, 30, 30, 5)) +
-  ylim(0, 0.2)
-```
 
 ```{r}
 #| fig-height: 5.5
 #| fig-width: 8
 
+# add standard deviation as error bars to the below plot
 all_model_metrics_wider |> 
   pivot_longer(
     cols = c(R2_mean, RMSE_mean),
@@ -1709,13 +1671,19 @@ all_model_metrics_wider |>
   ggplot(aes(x = model, y = value, fill = Omics_tested)) +
   facet_grid(~ metric, scales = "free") +
   geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
+  geom_pointrange(
+    aes(ymin = ifelse(metric == "R² (%)", value - R2_sd, value - RMSE_sd),
+        ymax = ifelse(metric == "R² (%)", value + R2_sd, value + RMSE_sd)),
+    position = position_dodge2(width = 0.9, preserve = "single")
+  ) +
   theme_catapult() +
   coord_flip() +
+  # move text labels inside bars next to x axis
   geom_text(
-    aes(label = paste0(value)),
+    aes(label = paste0(value), y = ifelse(metric == "R² (%)", 120, 30)),
     position = position_dodge2(width = 0.9, preserve = "single"),
-    hjust = -0.1,
-    size = 3.5,
+    hjust = 0,
+    size = 5,
     colour = "black"
   ) +
   labs(x = "", y = "") +
@@ -1730,68 +1698,4 @@ all_model_metrics_wider |>
     legend.title = element_text(hjust = 0.5),
     legend.title.position = "top"
   )
-
 ```
-
-
-```{r}
-#| fig-height: 5.5
-#| fig-width: 8
-
-all_model_metrics_wider |> 
-  pivot_longer(
-    cols = c(R2_mean, RMSE_mean),
-    names_to = "metric",
-    values_to = "value"
-  ) |>
-  mutate(metric = recode(metric,
-    "R2_mean" = "R² (%)",
-    "RMSE_mean" = "RMSE"
-  )) |>
-  ggplot(aes(x = model, y = value, fill = Omics_tested)) +
-  facet_grid(~ metric, scales = "free") +
-  geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
-  theme_catapult() +
-  coord_flip() +
-  geom_text(
-    aes(label = paste0(value)),
-    position = position_dodge2(width = 0.9, preserve = "single"),
-    hjust = -0.1,
-    size = 3.5,
-    colour = "black"
-  ) +
-  labs(x = "", 
-       y = "",
-       title = "Model performance metrics",
-       subtitle = "Target variable: NK cells (%) in sample") +
-  scale_fill_brewer(palette = "Paired", name = "Omics tested") +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.3))) +
-  guides(fill = guide_legend(nrow = 1)) +
-  theme(
-    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
-    plot.margin = margin(5, 30, 30, 5),
-    legend.position = c(-0.1, -0.15),  # negative y moves it outside plotting panel
-    legend.justification = c(0.4, 1.2),
-    legend.title = element_text(hjust = 0.5),
-    legend.title.position = "left"
-  )
-
-```
-
-
-```{r}
-#| fig-height: 10
-#| fig-width: 8
-
-# combine with patchwork
-r2_plot / rmse_plot +
-  plot_layout(guides = "collect") &
-  plot_annotation(tag_levels = "A") &
-  theme(legend.position = "bottom")
-```
-
-
-
-
-
-
