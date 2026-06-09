@@ -571,6 +571,9 @@ features_barplot <- bind_cols(lcms_features, miRNA_features, olink_features) |>
     names_to = "omics",
     values_to = "features"
   ) |>
+  # change names of lcms and olink
+  mutate(omics = ifelse(omics == "lcms", "Metabolite", omics),
+         omics = ifelse(omics == "olink", "Protein", omics)) |>
   ggplot(
     aes(
       x = reorder(omics, features), ,
@@ -590,7 +593,7 @@ features_barplot <- bind_cols(lcms_features, miRNA_features, olink_features) |>
     hjust = -0.1,
     size = 4
   ) +
-  ylim(0, 4200)
+  ylim(0, 1200)
 
 features_barplot
 ```
@@ -603,11 +606,18 @@ features_barplot
 upset_sample_data <- combined_metadata_and_process |> 
   select(miRNA, lcms, olink, scRNA) |> 
   filter(!(is.na(miRNA) & is.na(lcms) & is.na(olink) & is.na(scRNA))) |>
-  mutate(across(everything(), ~ ifelse(is.na(.), 0, 1)))
+  mutate(across(everything(), ~ ifelse(is.na(.), 0, 1))) |> 
+  # rename lcms and olink columns
+  rename(
+    Metabolite = lcms,
+    Protein = olink,
+    miRNA = miRNA,
+    scRNA = scRNA
+  )
 
 upset_plot <- upset(
   upset_sample_data,
-  intersect = c("miRNA", "lcms", "olink", "scRNA"),
+  intersect = c("miRNA", "Metabolite", "Protein", "scRNA"),
   name = "Intersections",
   sort_sets = "descending",
   stripes = "white"
@@ -1110,7 +1120,10 @@ all_feature_importances <- bind_rows(
     arrange(-importance) |> 
     slice_head(prop = 0.01) |> 
     mutate(integration = "Intermediate (NN)")
-)
+) |> 
+  # change olink to "Protein" and LCMS to "Metabolite" in omics column
+  mutate(omics = ifelse(omics == "olink", "Protein", omics),
+         omics = ifelse(omics == "lcms", "Metabolite", omics))
 ```
 
 ```{r}
@@ -1205,7 +1218,10 @@ all_feature_importances_cleaned <- bind_rows(
     arrange(-importance) |> 
     slice_head(prop = 0.01) |> 
     mutate(integration = "Intermediate (NN)")
-)
+) |> 
+  # change olink to "Protein" and LCMS to "Metabolite" in omics column
+  mutate(omics = ifelse(omics == "olink", "Protein", omics),
+         omics = ifelse(omics == "lcms", "Metabolite", omics))
 ```
 
 ## Early integration
@@ -1306,7 +1322,7 @@ late_integration_top_features_plot
 #| fig-height: 10
 #| fig-width: 8
 
-all_feature_importances_cleaned |> 
+late_integration_top_features_plot_faceted <- all_feature_importances_cleaned |> 
   filter(integration == "Late") |> 
   group_by(omics) |> 
   arrange(desc(abs(estimate))) |> 
@@ -1323,7 +1339,9 @@ all_feature_importances_cleaned |>
     x = "Feature",
     y = "Estimate"
   ) +
-  scale_fill_catapult_d() -> late_integration_top_features_plot_faceted
+  scale_fill_catapult_d() +
+  # add more padding to right hand of figure as an x axis label is being cut off slightly
+  theme(plot.margin = margin(5, 30, 5, 5))
 
 late_integration_top_features_plot_faceted
 ```
@@ -1335,6 +1353,9 @@ late_integration_top_features_plot_faceted
 #| fig-width: 8
 
 nn_feature_importance |> 
+  # change omics to more descriptive names
+    mutate(omics = ifelse(omics == "lcms", "Metabolite", omics),
+            omics = ifelse(omics == "olink", "Protein", omics)) |>
   group_by(omics) |> 
   arrange(desc(abs(importance))) |> 
   slice_head(n = 8) |> 
@@ -1627,9 +1648,9 @@ all_model_metrics <- bind_rows(
       str_detect(model, "Late") ~ "Late"
     ),
     Omics_tested = case_when(
-      str_detect(model, "LCMS") ~ "LCMS",
+      str_detect(model, "LCMS") ~ "Metabolite",
       str_detect(model, "miRNA") ~ "miRNA",
-      str_detect(model, "Olink") ~ "olink",
+      str_detect(model, "Olink") ~ "Protein",
       str_detect(model, "Hierarchical") ~ "Pathway",
       TRUE ~ "All"
     )
