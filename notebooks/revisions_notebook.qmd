@@ -1,0 +1,115 @@
+---
+title: "Untitled"
+format: html
+---
+
+# Loading
+
+```{r}
+#| label: library-loading
+
+library(here)
+library(aqua)
+library(umap)
+library(mixOmics)
+# mixKernel has quite a few dependencies, see mixKernel installation guide
+library(conflicted)
+library(janitor)
+library(gt)
+library(arrow)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::rename)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::lag)
+conflicts_prefer(dplyr::desc)
+conflicts_prefer(aqua::rescale)
+conflicts_prefer(ComplexUpset::upset)
+conflicts_prefer(arrow::read_feather)
+conflicts_prefer(base::as.factor)
+conflicted::conflicts_prefer(dplyr::first)
+```
+
+
+# Correlations between scRNA and flow cytometry
+```{r}
+raw_process_data <- fetch_rds("https://raw.githubusercontent.com/cgtc/plasticell_flow_analysis/main/00_data/multiomics_process_data/raw_process_data.rds")
+
+r3_fcm_target_variable <- raw_process_data[["r3_process_data"]]
+
+r4_fcm_target_variable <- raw_process_data[["r4_process_data"]]
+
+write.csv(r3_fcm_target_variable, here("00_data", "fcm_nk_cell_percentages_run_3.csv"), row.names = FALSE)
+write.csv(r4_fcm_target_variable, here("00_data", "fcm_nk_cell_percentages_run_4.csv"), row.names = FALSE)
+
+```
+
+```{r}
+r3_fcm_data <- r3_fcm_target_variable |> 
+    # select only rows with suspension as cell portion
+    filter(`Cell portion` == "Suspension") |> 
+    # select only the columns we need
+    select(Label, "CD45+/CD56+ (%)...63", "CD45+/CD56+ (%)...64") |> 
+    # calculate mean of those two columns
+    mutate(proportion_NK = rowMeans(pick("CD45+/CD56+ (%)...63", "CD45+/CD56+ (%)...64"), na.rm = TRUE)) |>
+    drop_na(proportion_NK)
+
+r4_fcm_data <- r4_fcm_target_variable |> 
+    # select only rows with suspension as cell portion
+    filter(`Cell portion` == "Suspension") |> 
+    # select only the columns we need
+    select(Label, "CD45+/CD56+ (%)...63", "CD45+/CD56+ (%)...64") |> 
+    # calculate mean of those two columns
+    mutate(proportion_NK = rowMeans(pick("CD45+/CD56+ (%)...63", "CD45+/CD56+ (%)...64"), na.rm = TRUE)) |>
+    drop_na(proportion_NK)
+
+fcm_data <- r3_fcm_data |> 
+    bind_rows(r4_fcm_data) |> 
+    select(Label, proportion_NK)
+```
+
+
+```{r}
+run_3_scrna_identity <- read_csv(here("00_data", "nk_cell_percentages_run_3.csv")) |> 
+    mutate(run = 3) |> 
+    # extract vessel number from string like "V01" but only the number as numeric
+    mutate(vessel = as.numeric(str_extract(vessel_day, "(?<=V)\\d+"))) |> 
+    # extract day number from string like "D1" or "D35" but only the number as numeric
+    mutate(day = as.numeric(str_extract(vessel_day, "(?<=D)\\d+"))) |> 
+    # make labels like r3_v4_d6
+    mutate(label = paste0("r", run, "_v", vessel, "_d", day))
+
+run_4_scrna_identity <- read_csv(here("00_data", "nk_cell_proportions_run_4.csv")) |> 
+    mutate(run = 4) |> 
+    # extract vessel number from string like "V01" but only the number as numeric
+    mutate(vessel = as.numeric(str_extract(vessel_day, "(?<=V)\\d+"))) |> 
+    # extract day number from string like "D1" or "D35" but only the number as numeric
+    mutate(day = as.numeric(str_extract(vessel_day, "(?<=D)\\d+"))) |> 
+    # make labels like r3_v4_d6
+    mutate(label = paste0("r", run, "_v", vessel, "_d", day))
+
+scrna_target_variable <- run_3_scrna_identity |> 
+    select(label, vessel, day, proportion_NK) |> 
+    bind_rows(run_4_scrna_identity |> 
+        select(label, vessel, day, proportion_NK))
+```
+
+```{r}
+fcm_scrna_data <- scrna_target_variable |> 
+    select(label, proportion_NK) |> 
+    inner_join(fcm_data, by = c("label" = "Label"), suffix = c("_scrna", "_fcm")) |> 
+    rename(proportion_NK_scrna = proportion_NK_scrna, proportion_NK_fcm = proportion_NK_fcm)
+
+# calculate the strength of the correlation between the two methods
+correlation <- cor(fcm_scrna_data$proportion_NK_scrna, fcm_scrna_data$proportion_NK_fcm, method = "pearson")
+```
+
+```{r}
+ggplot(fcm_scrna_data, aes(x = proportion_NK_scrna, y = proportion_NK_fcm)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(title = paste("Correlation between scRNA and Flow Cytometry (r =", round(correlation, 2), ")"),
+         x = "Proportion of NK cells (scRNA)",
+         y = "Proportion of NK cells (Flow Cytometry)") +
+    theme_catapult()
+```
+
