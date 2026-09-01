@@ -8,6 +8,7 @@ format: html
 ```{r}
 #| label: library-loading
 
+library(tidyverse)
 library(here)
 library(aqua)
 library(umap)
@@ -23,10 +24,11 @@ conflicts_prefer(dplyr::select)
 conflicts_prefer(dplyr::lag)
 conflicts_prefer(dplyr::desc)
 conflicts_prefer(aqua::rescale)
-conflicts_prefer(ComplexUpset::upset)
 conflicts_prefer(arrow::read_feather)
 conflicts_prefer(base::as.factor)
 conflicted::conflicts_prefer(dplyr::first)
+
+source(here("01_scripts/helpers.R"))
 ```
 
 
@@ -44,7 +46,7 @@ write.csv(r4_fcm_target_variable, here("00_data", "fcm_nk_cell_percentages_run_4
 ```
 
 ```{r}
-r3_fcm_data <- r3_fcm_target_variable |> 
+r3_cd45_cd56 <- r3_fcm_target_variable |> 
     # select only rows with suspension as cell portion
     filter(`Cell portion` == "Suspension") |> 
     # select only the columns we need
@@ -53,7 +55,7 @@ r3_fcm_data <- r3_fcm_target_variable |>
     mutate(proportion_NK = rowMeans(pick("CD45+/CD56+ (%)...63", "CD45+/CD56+ (%)...64"), na.rm = TRUE)) |>
     drop_na(proportion_NK)
 
-r4_fcm_data <- r4_fcm_target_variable |> 
+r4_cd45_cd56 <- r4_fcm_target_variable |> 
     # select only rows with suspension as cell portion
     filter(`Cell portion` == "Suspension") |> 
     # select only the columns we need
@@ -62,8 +64,8 @@ r4_fcm_data <- r4_fcm_target_variable |>
     mutate(proportion_NK = rowMeans(pick("CD45+/CD56+ (%)...63", "CD45+/CD56+ (%)...64"), na.rm = TRUE)) |>
     drop_na(proportion_NK)
 
-fcm_data <- r3_fcm_data |> 
-    bind_rows(r4_fcm_data) |> 
+cd45_cd56_data <- r3_cd45_cd56 |> 
+    bind_rows(r4_cd45_cd56) |> 
     select(Label, proportion_NK)
 ```
 
@@ -96,7 +98,7 @@ scrna_target_variable <- run_3_scrna_identity |>
 ```{r}
 fcm_scrna_data <- scrna_target_variable |> 
     select(label, proportion_NK) |> 
-    inner_join(fcm_data, by = c("label" = "Label"), suffix = c("_scrna", "_fcm")) |> 
+    inner_join(cd45_cd56_data, by = c("label" = "Label"), suffix = c("_scrna", "_fcm")) |> 
     rename(proportion_NK_scrna = proportion_NK_scrna, proportion_NK_fcm = proportion_NK_fcm)
 
 # calculate the strength of the correlation between the two methods
