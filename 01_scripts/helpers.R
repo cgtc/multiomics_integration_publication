@@ -54,15 +54,27 @@ fetch_rds <- function(file, store_path = file.path("raw", "unprocessed")) {
   
   if (is_gh) {
     cli::cat_rule("File not found locally - Downloading from GitHub")
+    token <- fetch_git_creds()
+    
+    # Build headers with token if available
+    headers <- if (is.null(token)) {
+      c()
+    } else {
+      c(Authorization = paste("token", token))
+    }
+    
     tryCatch(
       {
-        tmp <- readRDS(url(file, headers = c(Authorization = paste("token", token))))
+        tmp <- readRDS(url(file, headers = headers))
       },
       error = function(e) {
         stop("Error downloading file from GitHub: ", e)
       }
     )
     cli::cat_rule("Download Complete. Saving downloaded file.")
+    
+    # Ensure directory exists
+    dir.create(file.path("00_data", store_path), showWarnings = FALSE, recursive = TRUE)
     saveRDS(tmp, file.path("00_data", store_path, f_name))
 
     return(tmp)

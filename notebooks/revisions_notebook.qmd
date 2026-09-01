@@ -1,6 +1,42 @@
 ---
-title: "Untitled"
-format: html
+title: "Revisions notebook"
+author: "Joe Oddy"
+lightbox: auto
+execute:
+  echo: false
+  warning: false
+  dev: "ragg_png"
+  cache: false
+format:
+  html:
+    theme: flatly
+    mermaid:
+      theme: neutral
+    page-layout: article
+    self-contained: true
+    code-line-numbers: true
+    code-block-bg: true
+    code-block-border-left: "#30BBF0"
+    code-copy: true
+    code-link: false
+    code-fold: true
+    code-tools:
+      source: true
+      toggle: false
+      caption: none
+    fig-align: center
+    fig-height: 5
+    fig-width: 8
+    fig-responsive: true
+    fig-dpi: 600
+    fig-cap-location: top
+    number-sections: true
+    number-depth: 2
+    toc: true
+    toc-depth: 3
+    dev: "ragg_png"
+    smooth-scroll: true
+    embed-resources: true
 ---
 
 # Loading
@@ -18,6 +54,7 @@ library(conflicted)
 library(janitor)
 library(gt)
 library(arrow)
+library(patchwork)
 conflicts_prefer(dplyr::filter)
 conflicts_prefer(dplyr::rename)
 conflicts_prefer(dplyr::select)
@@ -96,22 +133,95 @@ scrna_target_variable <- run_3_scrna_identity |>
 ```
 
 ```{r}
-fcm_scrna_data <- scrna_target_variable |> 
+cd45_cd56_scrna_data <- scrna_target_variable |> 
     select(label, proportion_NK) |> 
     inner_join(cd45_cd56_data, by = c("label" = "Label"), suffix = c("_scrna", "_fcm")) |> 
     rename(proportion_NK_scrna = proportion_NK_scrna, proportion_NK_fcm = proportion_NK_fcm)
 
 # calculate the strength of the correlation between the two methods
-correlation <- cor(fcm_scrna_data$proportion_NK_scrna, fcm_scrna_data$proportion_NK_fcm, method = "pearson")
+correlation <- cor(cd45_cd56_scrna_data$proportion_NK_scrna, cd45_cd56_scrna_data$proportion_NK_fcm, method = "pearson")
 ```
 
 ```{r}
-ggplot(fcm_scrna_data, aes(x = proportion_NK_scrna, y = proportion_NK_fcm)) +
+cd45_cd56_correlation_plot <- ggplot(cd45_cd56_scrna_data, aes(x = proportion_NK_scrna, y = proportion_NK_fcm)) +
     geom_point() +
     geom_smooth(method = "lm", se = FALSE, color = "blue") +
-    labs(title = paste("Correlation between scRNA and Flow Cytometry (r =", round(correlation, 2), ")"),
+    labs(title = paste("Correlation between scRNA and flow cytometry"),
          x = "Proportion of NK cells (scRNA)",
-         y = "Proportion of NK cells (Flow Cytometry)") +
+         y = "Proportion of CD45+/CD56+ cells (flow cytometry)") +
+            # add correlation coefficient to plot in corner
+    annotate("text", x = 0, y = 0.9, label = paste("r =", round(correlation, 2)), hjust = 0, size = 5) +
+    theme_catapult()
+
+cd45_cd56_correlation_plot
+```
+
+```{r}
+# bland altman plot with loa lines
+bland_altman <- ggplot(cd45_cd56_scrna_data, aes(x = (proportion_NK_scrna + proportion_NK_fcm) / 2, y = proportion_NK_scrna - proportion_NK_fcm)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    geom_hline(yintercept = mean(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm), linetype = "dashed", color = "blue") +
+    geom_hline(yintercept = mean(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm) + 1.96 * sd(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm), linetype = "dotted", color = "blue") +
+    geom_hline(yintercept = mean(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm) - 1.96 * sd(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm), linetype = "dotted", color = "blue") +
+    labs(title = "Bland-Altman plot (scRNA and flow cytometry)",
+         x = "Average of scRNA and flow cytometry",
+         y = "Difference between scRNA and flow cytometry") +
+    theme_catapult()
+
+bland_altman
+# calculate average difference and limits of agreement
+mean_diff <- mean(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm)
+loa_upper <- mean_diff + 1.96 * sd(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm)
+loa_lower <- mean_diff - 1.96 * sd(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm)
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 10
+
+# plot together with patchwork with labels A. and B. with one column two rows, make each plot square
+combined_plot <- (cd45_cd56_correlation_plot + theme(aspect.ratio = 1)) / (bland_altman + theme(aspect.ratio = 1)) + plot_annotation(tag_levels = 'A')
+combined_plot
+```
+
+# Visualisation of NK cell purity
+
+```{r}
+#| fig-width: 6
+#| fig-height: 12
+
+scrna_target_variable |> 
+    mutate(run = str_extract(label, "(?<=r)\\d+")) |>
+    ggplot(aes(x = day, y = proportion_NK)) +
+    facet_grid(vessel ~ run) +
+    geom_point() +
+    geom_line() +
+    labs(title = "Proportion of NK cells over time (scRNA)",
+         x = "Day",
+         y = "Proportion of NK cells",
+         color = "Vessel") +
     theme_catapult()
 ```
 
+
+```{r}
+#| fig-width: 6
+#| fig-height: 4
+
+# histogram showing distribution of NK cell proportions coloured by run
+scrna_target_variable |> 
+    mutate(run = str_extract(label, "(?<=r)\\d+")) |>
+    ggplot(aes(x = proportion_NK)) +
+    facet_wrap(~ run, ncol = 2) +
+    geom_histogram(binwidth = 0.05) +
+    labs(title = "Distribution of NK cell proportions (scRNA)",
+         x = "Proportion of NK cells",
+         y = "Count") +
+    theme_catapult()
+```
+
+
+```{r}
+
+```
