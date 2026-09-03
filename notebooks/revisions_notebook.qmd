@@ -146,9 +146,8 @@ correlation <- cor(cd45_cd56_scrna_data$proportion_NK_scrna, cd45_cd56_scrna_dat
 cd45_cd56_correlation_plot <- ggplot(cd45_cd56_scrna_data, aes(x = proportion_NK_scrna, y = proportion_NK_fcm)) +
     geom_point() +
     geom_smooth(method = "lm", se = FALSE, color = "blue") +
-    labs(title = paste("Correlation between scRNA and flow cytometry"),
-         x = "Proportion of NK cells (scRNA)",
-         y = "Proportion of CD45+/CD56+ cells (flow cytometry)") +
+    labs(x = "NK cells (scRNA)",
+         y = "CD45+/CD56+ cells (FCM)") +
             # add correlation coefficient to plot in corner
     annotate("text", x = 0, y = 0.9, label = paste("r =", round(correlation, 2)), hjust = 0, size = 5) +
     theme_catapult()
@@ -164,9 +163,8 @@ bland_altman <- ggplot(cd45_cd56_scrna_data, aes(x = (proportion_NK_scrna + prop
     geom_hline(yintercept = mean(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm), linetype = "dashed", color = "blue") +
     geom_hline(yintercept = mean(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm) + 1.96 * sd(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm), linetype = "dotted", color = "blue") +
     geom_hline(yintercept = mean(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm) - 1.96 * sd(cd45_cd56_scrna_data$proportion_NK_scrna - cd45_cd56_scrna_data$proportion_NK_fcm), linetype = "dotted", color = "blue") +
-    labs(title = "Bland-Altman plot (scRNA and flow cytometry)",
-         x = "Average of scRNA and flow cytometry",
-         y = "Difference between scRNA and flow cytometry") +
+    labs(x = "Mean of scRNA and FCM",
+         y = "scRNA - FCM") +
     theme_catapult()
 
 bland_altman
@@ -249,10 +247,20 @@ bar_plot_data |>
     facet_wrap(~ method + run, ncol = 2) +
     geom_tile() +
     scale_fill_catapult_c(na.value = "white") +
-    labs(title = "Heatmap of NK cell proportions",
-         x = "Day",
+    labs(x = "Day",
          y = "Vessel") +
     theme_catapult() +
     # rotate legend text
-    theme(legend.text = element_text(angle = 45, hjust = 1))
+    theme(legend.text = element_text(angle = 45, hjust = 1)) -> heatmap_plot
+
+heatmap_plot
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 8
+
+# plot together with patchwork with labels A. and B. with one column two rows, make each plot square
+complete_target_plot <- (cd45_cd56_correlation_plot | bland_altman) / heatmap_plot + plot_annotation(tag_levels = 'A')
+complete_target_plot
 ```
