@@ -223,5 +223,36 @@ scrna_target_variable |>
 
 
 ```{r}
+scrna_target_variable |> 
+    select(label, proportion_NK) |> 
+    left_join(cd45_cd56_data, by = c("label" = "Label"), suffix = c("_scrna", "_fcm")) |> 
+    rename(proportion_NK_scrna = proportion_NK_scrna, proportion_NK_fcm = proportion_NK_fcm) |>
+    mutate(run = str_extract(label, "(?<=r)\\d+")) |>
+    mutate(vessel = str_extract(label, "(?<=v)\\d+")) |>
+    mutate(day = str_extract(label, "(?<=d)\\d+")) |>
+    # make numeric
+    mutate(run = as.numeric(run)) |>
+    mutate(vessel = as.numeric(vessel)) |>
+    mutate(day = as.numeric(day)) |>
+    pivot_longer(cols = c(proportion_NK_scrna, proportion_NK_fcm), names_to = "method", values_to = "proportion") -> bar_plot_data
 
+# make it a heatmap instead
+bar_plot_data |>
+    mutate(method = case_when(
+        method == "proportion_NK_scrna" ~ "scRNA",
+        method == "proportion_NK_fcm" ~ "Flow cytometry"
+    )) |>
+    mutate(run = paste0("Run ", run)) |>
+    drop_na(proportion) |> 
+    complete(day, vessel, method, run, fill = list(proportion = NA)) |>
+    ggplot(aes(x = day, y = vessel, fill = proportion)) +
+    facet_wrap(~ method + run, ncol = 2) +
+    geom_tile() +
+    scale_fill_catapult_c(na.value = "white") +
+    labs(title = "Heatmap of NK cell proportions",
+         x = "Day",
+         y = "Vessel") +
+    theme_catapult() +
+    # rotate legend text
+    theme(legend.text = element_text(angle = 45, hjust = 1))
 ```
