@@ -61,6 +61,7 @@ library(ComplexUpset)
 library(arrow)
 library(patchwork)
 library(tidymodels)
+library(ggcorrplot)
 conflicts_prefer(dplyr::filter)
 conflicts_prefer(dplyr::rename)
 conflicts_prefer(dplyr::select)
@@ -1064,6 +1065,22 @@ modality_umaps <- (lcms_umap_plot | miRNA_umap_plot) / (olink_umap_plot | scRNA_
   theme(legend.position = "bottom")
 
 modality_umaps
+
+# save as png instead of pdf for better quality
+ggsave("00_data/figs/modality_umaps.png", plot = modality_umaps, width = 180, height = 180, units = "mm", dpi = 600)
+```
+
+# Correlation between purity and efficacy
+
+```{r}
+process_data_correlation_data <- process_data |> 
+  column_to_rownames("label") |>
+  select(`CD45+/CD56+ (%)`, A549_48_combined:cancer_cells_killed_per_PSC)
+
+# calculate correlations and make corrplot
+correlation_matrix <- cor(process_data_correlation_data, use = "pairwise.complete.obs")
+
+ggcorrplot(correlation_matrix, lower.method = "square", upper.method = "number")
 ```
 
 # Number of important features
