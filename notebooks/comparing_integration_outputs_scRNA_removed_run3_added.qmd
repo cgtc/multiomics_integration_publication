@@ -890,6 +890,182 @@ hierarchical_tsne
 
 Similar to the plot above, but with the four panels being the different data types. Probably to go in supplementary.
 
+```{r}
+day_breaks <- combined_metadata |>
+  pull(day) |>
+  unique() |>
+  sort()
+
+day_breaks_legend <- day_breaks[day_breaks %in% c(3, 15, 26, 35)]
+
+shared_day_scale <- scale_colour_catapult_c(
+  limits = range(day_breaks, na.rm = TRUE),
+  breaks = day_breaks_legend,
+  labels = day_breaks_legend,
+  oob = scales::squish
+)
+```
+
+```{r}
+# make lcms umap
+lcms_data_umap <- lcms_data |>
+  column_to_rownames("label") |>
+  select(!omics:vessel) |>
+  drop_na() |>
+  umap()
+
+lcms_umap_plot_data <- lcms_data_umap$layout |>
+  as.data.frame() |>
+  rownames_to_column("label") |>
+  full_join(lcms_data |>
+    select(omics:vessel)) |> 
+  relocate(omics:vessel)
+
+
+lcms_umap_plot <- ggplot(
+  lcms_umap_plot_data,
+  aes(
+    x = V1,
+    y = V2,
+    colour = day
+  )
+) +
+  geom_point(
+    size = 2.5,
+    alpha = 0.8
+  ) +
+  shared_day_scale +
+  theme_catapult() +
+  labs(
+    title = "LCMS",
+    color = "Day"
+  )
+
+
+lcms_umap_plot
+```
+
+```{r}
+# make miRNA umap
+miRNA_data_umap <- miRNA_data_scaled |>
+  column_to_rownames("label") |>
+  select(!omics:run) |>
+  drop_na() |>
+  umap()
+
+miRNA_umap_plot_data <- miRNA_data_umap$layout |>
+  as.data.frame() |>
+  rownames_to_column("label") |>
+  full_join(miRNA_data_scaled |>
+    select(omics:run)) |> 
+  relocate(omics:run)
+
+miRNA_umap_plot <- ggplot(
+  miRNA_umap_plot_data,
+  aes(
+    x = V1,
+    y = V2,
+    colour = day
+  )
+) +
+  geom_point(
+    size = 2.5,
+    alpha = 0.8
+  ) +
+  shared_day_scale +
+  theme_catapult() +
+  labs(
+    title = "miRNA",
+    color = "Day"
+  )
+
+miRNA_umap_plot
+```
+
+```{r}
+# make olink umap
+olink_data_umap <- wide_olink |>
+  column_to_rownames("label") |>
+  select(!run:DF) |>
+  drop_na() |>
+  umap()
+
+olink_umap_plot_data <- olink_data_umap$layout |>
+  as.data.frame() |>
+  rownames_to_column("label") |>
+  full_join(wide_olink |>
+    select(run:DF)) |> 
+  relocate(run:DF)
+
+olink_umap_plot <- ggplot(
+  olink_umap_plot_data,
+  aes(
+    x = V1,
+    y = V2,
+    colour = day
+  )
+) +
+  geom_point(
+    size = 2.5,
+    alpha = 0.8
+  ) +
+  shared_day_scale +
+  theme_catapult() +
+  labs(
+    title = "O-link",
+    color = "Day"
+  )
+
+olink_umap_plot
+```
+
+```{r}
+# make scRNA umap
+scRNA_data_umap <- scRNA_data_wide |>
+  column_to_rownames("label") |>
+  select(!run:omics) |>
+  drop_na() |>
+  umap()
+
+scRNA_umap_plot_data <- scRNA_data_umap$layout |>
+  as.data.frame() |>
+  rownames_to_column("label") |>
+  full_join(scRNA_data_wide |>
+    select(run:omics)) |> 
+  relocate(run:omics)
+
+scRNA_umap_plot <- ggplot(
+  scRNA_umap_plot_data,
+  aes(
+    x = V1,
+    y = V2,
+    colour = day
+  )
+) +
+  geom_point(
+    size = 2.5,
+    alpha = 0.8
+  ) +
+  shared_day_scale +
+  theme_catapult() +
+  labs(
+    title = "scRNA",
+    color = "Day"
+  )
+
+scRNA_umap_plot
+```
+
+```{r}
+# patchwork of all umaps
+modality_umaps <- (lcms_umap_plot | miRNA_umap_plot) / (olink_umap_plot | scRNA_umap_plot) +
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom")
+
+modality_umaps
+```
+
 # Number of important features
 
 Might be good to have a figure similar to the above comparing the top ranked features identified from the different integration methods.
