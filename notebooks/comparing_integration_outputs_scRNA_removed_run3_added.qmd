@@ -62,6 +62,7 @@ library(arrow)
 library(patchwork)
 library(tidymodels)
 library(ggcorrplot)
+library(ggpubr)
 conflicts_prefer(dplyr::filter)
 conflicts_prefer(dplyr::rename)
 conflicts_prefer(dplyr::select)
@@ -1073,15 +1074,39 @@ ggsave("00_data/figs/modality_umaps.png", plot = modality_umaps, width = 180, he
 # Correlation between purity and efficacy
 
 ```{r}
+# add scRNA proportions to process data correlation data
+
+```
+
+```{r}
 process_data_correlation_data <- process_data |> 
-  column_to_rownames("label") |>
-  select(`CD45+/CD56+ (%)`, A549_48_combined:cancer_cells_killed_per_PSC)
+  select(label, `CD45+/CD56+ (%)`, A549_48_combined:cancer_cells_killed_per_PSC) |> 
+  left_join(nk_cells_target |> 
+  as.data.frame() |>
+  rownames_to_column("label"), 
+  by = "label") |>
+  column_to_rownames("label")
 
 # calculate correlations and make corrplot
 correlation_matrix <- cor(process_data_correlation_data, use = "pairwise.complete.obs")
 
 ggcorrplot(correlation_matrix, lower.method = "square", upper.method = "number")
 ```
+
+```{r}
+# plot correlations only between CD45/CD56 variable and the efficacy variables
+
+ggplot(process_data_correlation_data |> drop_na(), aes(x = proportion_NK, y = cancer_cells_killed_per_PSC)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  theme_catapult() +
+  labs(
+    x = "Proportion NK cells",
+    y = "Cancer cells killed per PSC"
+  ) +
+  stat_cor(method = "pearson")
+```
+
 
 # Number of important features
 
