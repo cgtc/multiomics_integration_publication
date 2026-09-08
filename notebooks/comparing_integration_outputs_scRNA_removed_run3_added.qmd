@@ -63,6 +63,7 @@ library(patchwork)
 library(tidymodels)
 library(ggcorrplot)
 library(ggpubr)
+library(GGally)
 conflicts_prefer(dplyr::filter)
 conflicts_prefer(dplyr::rename)
 conflicts_prefer(dplyr::select)
@@ -1074,39 +1075,102 @@ ggsave("00_data/figs/modality_umaps.png", plot = modality_umaps, width = 180, he
 # Correlation between purity and efficacy
 
 ```{r}
-# add scRNA proportions to process data correlation data
-
-```
-
-```{r}
 process_data_correlation_data <- process_data |> 
-  select(label, `CD45+/CD56+ (%)`, A549_48_combined:cancer_cells_killed_per_PSC) |> 
+  select(label, A549_48_combined:T47D_48_combined) |> 
   left_join(nk_cells_target |> 
   as.data.frame() |>
   rownames_to_column("label"), 
   by = "label") |>
   column_to_rownames("label")
 
-# calculate correlations and make corrplot
-correlation_matrix <- cor(process_data_correlation_data, use = "pairwise.complete.obs")
-
-ggcorrplot(correlation_matrix, lower.method = "square", upper.method = "number")
+# plot correlations of proportion_NK against each of the process metrics in process_data_correlation_data wihtout correlations between the process metrics themselves
+process_data_correlation_data |>
+  drop_na() |> 
+  pivot_longer(cols = A549_48_combined:T47D_48_combined, names_to = "process_metric", values_to = "process_value") |>
+  ggplot(aes(x = proportion_NK, y = process_value)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  facet_wrap(~process_metric, scales = "free") +
+  theme_catapult() +
+  labs(
+    x = "Proportion of NK cells",
+    y = "Process metric value"
+  ) +
+  # add correlation to each facet
+  stat_cor(
+    aes(label = paste(..r.label.., ..p.label.., sep = "~`,`~")),
+    method = "pearson",
+    label.x.npc = "left",
+    label.y.npc = "top",
+    size = 5
+  )
 ```
 
 ```{r}
-# plot correlations only between CD45/CD56 variable and the efficacy variables
+cytotoxicity_data <- read_excel(here("00_data/Plasticell Runs 3 and 4 process data summaries.xlsx"), sheet = "Killing assay") |>
+  clean_names() |> 
+  # average across triplicate columns ("0.25:1", "0.5:1", "1:1", "cancer_only"), 
+  # collapsing each group of three into a single averaged column
+  mutate(
+    x0_25_1     = rowMeans(across(starts_with("x0_25_1")), na.rm = TRUE),
+    x0_5_1      = rowMeans(across(starts_with("x0_5_1")), na.rm = TRUE),
+    x1_1        = rowMeans(across(starts_with("x1_1")), na.rm = TRUE),
+    cancer_only = rowMeans(across(starts_with("cancer_only")), na.rm = TRUE),
+    .keep = "unused"
+  )
 
-ggplot(process_data_correlation_data |> drop_na(), aes(x = proportion_NK, y = cancer_cells_killed_per_PSC)) +
+# add proportion NK data
+cytotoxicity_data_w_NK <- cytotoxicity_data |>
+  left_join(
+    nk_cells_target |> 
+      as.data.frame() |>
+      rownames_to_column("label"), 
+    by = "label"
+  ) |> 
+  pivot_wider(
+    names_from = "panel",
+    values_from = c("x0_25_1", "x0_5_1", "x1_1", "cancer_only"),
+    names_glue = "{.value},{panel}"
+  ) |> 
+  select(!starts_with("cancer")) |>
+  pivot_longer(
+    cols = starts_with("x"),
+    names_to = "assay",
+    values_to = "assay_value"
+  ) |> 
+  # separate the assay column
+  separate(assay, into = c("ratio", "cell_line_hour"), sep = ",") |> 
+  # rename ratio back into original syntax (e.g. "x0_25_1" -> "0.25:1")
+  mutate(ratio = case_when(
+    ratio == "x0_25_1" ~ "0.25:1",
+    ratio == "x0_5_1" ~ "0.5:1",
+    ratio == "x1_1" ~ "1:1",
+    TRUE ~ ratio
+  ))
+
+cytotoxicity_data_w_NK |>
+  ggplot(aes(x = proportion_NK, y = assay_value)) +
   geom_point() +
   geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  facet_grid(ratio ~ cell_line_hour, scales = "free") +
   theme_catapult() +
   labs(
-    x = "Proportion NK cells",
-    y = "Cancer cells killed per PSC"
+    x = "Proportion of NK cells",
+    y = "Cancer cell viability (%)"
   ) +
-  stat_cor(method = "pearson")
-```
+  # add correlation to each facet
+  stat_cor(
+    aes(label = paste(..r.label..,  sep = "~`")),
+    method = "pearson",
+    label.x.npc = "left",
+    label.y.npc = "top",
+    size = 5
+  ) +
+  # rotate x axis labels
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
+ggsave("00_data/figs/cytotoxicity_vs_NK_proportion.png", width = 300, height = 200, units = "mm", dpi = 600)
+```
 
 # Number of important features
 
