@@ -577,6 +577,8 @@ olink_data_modelling <- wide_olink |>
     by = "label") |> 
   relocate(proportion_NK) |> 
   drop_na() |> 
+  mutate(run_vessel = paste0("r", run, "_", "v", vessel)) |>
+  relocate(run_vessel) |> 
   select(!run:DF) |> 
   mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
   relocate(proportion_NK, proportion_NK_quartile)
@@ -588,11 +590,12 @@ olink_lasso_results <- nested_lasso_regression(
   penalty_range = c(-4, 0),
   levels = 4,
   outer_folds = 5,
-  outer_repeats = 10,
+  outer_repeats = 1,
   inner_folds = 3,
   final_tune_folds = 5,
   metric = "rmse",
-  strata = "proportion_NK_quartile"
+  strata = "proportion_NK_quartile",
+  group = "run_vessel"
 )
 ```
 
@@ -628,9 +631,9 @@ olink_lasso_results_summary |>
     title = md("Nested Random Forest Regression Metrics - Overall")
   )
 
-if (!here("00_data/late_integration_metrics_olink_run3_added.rds") |> 
+if (!here("00_data/late_integration_metrics_olink_run3_added_loo_cv.rds") |> 
     file.exists()) {
-  write_rds(olink_lasso_results_summary, here("00_data/late_integration_metrics_olink_run3_added.rds"))
+  write_rds(olink_lasso_results_summary, here("00_data/late_integration_metrics_olink_run3_added_loo_cv.rds"))
 }
 ```
 
@@ -749,6 +752,8 @@ mirna_data_modelling <- miRNA_data_scaled |>
     by = "label") |> 
   relocate(proportion_NK) |> 
   drop_na() |> 
+  mutate(run_vessel = paste0("r", run, "_", "v", vessel)) |>
+  relocate(run_vessel) |> 
   select(!omics:run) |> 
   mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
   relocate(proportion_NK, proportion_NK_quartile)
@@ -760,11 +765,12 @@ mirna_lasso_results <- nested_lasso_regression(
   penalty_range = c(-4, 0),
   levels = 4,
   outer_folds = 5,
-  outer_repeats = 10,
+  outer_repeats = 1,
   inner_folds = 3,
   final_tune_folds = 5,
   metric = "rmse",
-  strata = "proportion_NK_quartile"
+  strata = "proportion_NK_quartile",
+  group = "run_vessel"
 )
 ```
 
@@ -800,9 +806,9 @@ mirna_lasso_results_summary |>
     title = md("Nested Random Forest Regression Metrics - Overall")
   )
 
-if (!here("00_data/late_integration_metrics_mirna_run3_added.rds") |> 
+if (!here("00_data/late_integration_metrics_mirna_run3_added_loo_cv.rds") |> 
     file.exists()) {
-  write_rds(mirna_lasso_results_summary, here("00_data/late_integration_metrics_mirna_run3_added.rds"))
+  write_rds(mirna_lasso_results_summary, here("00_data/late_integration_metrics_mirna_run3_added_loo_cv.rds"))
 }
 ```
 
@@ -923,6 +929,8 @@ lcms_data_modelling <- lcms_data |>
     by = "label") |> 
   relocate(proportion_NK) |> 
   drop_na() |> 
+  mutate(run_vessel = paste0("r", run, "_", "v", vessel)) |>
+  relocate(run_vessel) |>
   select(!omics:vessel) |> 
   mutate(proportion_NK_quartile = ntile(proportion_NK, 4) |> as.factor()) |> 
   relocate(proportion_NK, proportion_NK_quartile)
@@ -934,11 +942,12 @@ lcms_lasso_results <- nested_lasso_regression(
   penalty_range = c(-4, 0),
   levels = 4,
   outer_folds = 5,
-  outer_repeats = 10,
+  outer_repeats = 1,
   inner_folds = 3,
   final_tune_folds = 5,
   metric = "rmse",
-  strata = "proportion_NK_quartile"
+  strata = "proportion_NK_quartile",
+  group = "run_vessel"
 )
 ```
 
@@ -974,9 +983,9 @@ lcms_lasso_results_summary |>
     title = md("Nested Random Forest Regression Metrics - Overall")
   )
 
-if (!here("00_data/late_integration_metrics_lcms_run3_added.rds") |> 
+if (!here("00_data/late_integration_metrics_lcms_run3_added_loo_cv.rds") |> 
     file.exists()) {
-  write_rds(lcms_lasso_results_summary, here("00_data/late_integration_metrics_lcms_run3_added.rds"))
+  write_rds(lcms_lasso_results_summary, here("00_data/late_integration_metrics_lcms_run3_added_loo_cv.rds"))
 }
 ```
 
@@ -1078,8 +1087,7 @@ all_feature_importances <- bind_rows(
   .id = "data_type"
 )
 
-if(!file.exists(here("00_data/feature_importances/late_integration_feature_importances_run3_added.rds"))){
-  write_rds(all_feature_importances, here("00_data/feature_importances/late_integration_feature_importances_run3_added.rds"))
+if(!file.exists(here("00_data/feature_importances/late_integration_feature_importances_run3_added_loo_cv.rds"))){
+  write_rds(all_feature_importances, here("00_data/feature_importances/late_integration_feature_importances_run3_added_loo_cv.rds"))
 }
 ```
-
