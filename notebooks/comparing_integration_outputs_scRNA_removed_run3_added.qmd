@@ -1468,8 +1468,13 @@ all_feature_importances |>
   scale_fill_catapult_d() +
   theme(plot.margin = margin(5, 30, 30, 5),
         legend.title.position = "left") +
-  scale_fill_brewer(palette = "Paired", name = "Feature type") +
+  scale_fill_manual(
+    values = RColorBrewer::brewer.pal(n_distinct(all_feature_importances$omics) + 1, "Paired")[-1],
+    name = "Feature type"
+  ) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.3)))
+
+ggsave("00_data/figs/combined_feature_importance_plot.png", width = 210, height = 150, units = "mm", dpi = 600)
 ```
 
 
@@ -1523,7 +1528,16 @@ all_feature_importances_cleaned |>
     x = "Feature",
     y = "Importance"
   ) +
-  scale_fill_catapult_d() -> early_integration_top_features_plot
+  scale_fill_manual(
+    values = {
+      omics_levels <- sort(unique(all_feature_importances_cleaned$omics))
+      pal <- RColorBrewer::brewer.pal(max(length(omics_levels) + 1, 5), "Paired")
+      cols <- setNames(pal[seq_along(omics_levels) + 1], omics_levels)
+      cols["Protein"] <- pal[5]
+      cols
+    },
+    name = "Feature type"
+  ) -> early_integration_top_features_plot
 
 early_integration_top_features_plot
 ```
@@ -1545,7 +1559,13 @@ all_feature_importances_cleaned |>
     x = "Feature",
     y = "Loading on component 1"
   ) +
-  scale_fill_catapult_d() -> intermediate_integration_top_features_plot
+  scale_fill_manual(
+    values = {
+      pal <- RColorBrewer::brewer.pal(5, "Paired")
+      c(Metabolite = pal[2], miRNA = pal[3], Protein = pal[5])
+    },
+    name = "Feature type"
+  ) -> intermediate_integration_top_features_plot
 
 intermediate_integration_top_features_plot
 ```
@@ -1561,7 +1581,7 @@ all_feature_importances_cleaned |>
   filter(integration == "Hierarchical") |> 
   arrange(desc(importance)) |> 
   slice_head(n = 8) |> 
-  ggplot(aes(x = reorder(feature, -importance), y = importance)) +
+  ggplot(aes(x = reorder(feature, -importance), y = importance, fill = "Pathway")) +
   geom_col() +
   guides(x =  guide_axis(angle = 90)) +
   theme_catapult() +
@@ -1571,7 +1591,10 @@ all_feature_importances_cleaned |>
     x = "Feature",
     y = "Importance"
   ) +
-  scale_fill_catapult_d() -> hierarchical_integration_top_features_plot
+  scale_fill_manual(
+    values = c(Pathway = RColorBrewer::brewer.pal(4, "Paired")[4]),
+    guide = "none"
+  ) -> hierarchical_integration_top_features_plot
 
 hierarchical_integration_top_features_plot
 ```
@@ -1673,7 +1696,7 @@ all_feature_importances_cleaned |>
   filter(integration == "Hierarchical") |> 
   arrange(desc(importance)) |> 
   slice_head(n = 8) |> 
-  ggplot(aes(x = reorder(feature, importance), y = importance)) +
+  ggplot(aes(x = reorder(feature, importance), y = importance, fill = "Pathway")) +
   geom_col() +
   coord_flip() +
   theme_catapult() +
@@ -1683,7 +1706,10 @@ all_feature_importances_cleaned |>
     x = "Feature",
     y = "Importance"
   ) +
-  scale_fill_catapult_d() -> hierarchical_integration_top_features_horiz
+  scale_fill_manual(
+    values = c(Pathway = RColorBrewer::brewer.pal(4, "Paired")[4]),
+    guide = "none"
+  ) -> hierarchical_integration_top_features_horiz
 
 hierarchical_integration_top_features_horiz
 ```
@@ -1740,6 +1766,58 @@ hierarchical_integration_top_features_horiz
   plot_annotation(tag_levels = "A") &
   theme(legend.position = "bottom")
 ```
+
+```{r}
+#| label: fig-combined-top-features-plot-without-lates
+#| fig-height: 10
+#| fig-width: 10
+
+(
+  early_integration_top_features_plot /
+  intermediate_integration_top_features_plot /
+  wrap_elements(full = hierarchical_integration_top_features_horiz)
+) +
+  plot_layout(heights = c(1, 1, 1.5)) +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "none")
+```
+
+```{r}
+omics_palette <- {
+  pal <- RColorBrewer::brewer.pal(5, "Paired")
+  c(Metabolite = pal[2], miRNA = pal[3], Pathway = pal[4], Protein = pal[5])
+}
+
+# dummy plot purely to generate the legend
+legend_plot <- ggplot(
+  data.frame(omics = factor(names(omics_palette), levels = names(omics_palette)), x = 1, y = 1),
+  aes(x, y, fill = omics)
+) +
+  geom_col() +
+  scale_fill_manual(values = omics_palette, name = "Feature type") +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold", size = 12),
+    legend.text = element_text(size = 11)
+  )
+
+shared_legend <- cowplot::get_legend(legend_plot)
+
+top_plots <- (
+  early_integration_top_features_plot /
+  intermediate_integration_top_features_plot /
+  wrap_elements(full = hierarchical_integration_top_features_horiz)
+) +
+  plot_layout(heights = c(1, 1, 1.5)) +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "none")
+
+wrap_elements(top_plots) / wrap_elements(shared_legend) +
+  plot_layout(heights = c(20, 1))
+
+ggsave("00_data/figs/combined_top_features_plot.png", width = 250, height = 280, units = "mm", dpi = 600)
+```
+
 
 # Common features between integration methods
 
