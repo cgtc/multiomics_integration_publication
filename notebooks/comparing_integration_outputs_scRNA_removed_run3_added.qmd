@@ -641,6 +641,55 @@ patchwork::wrap_elements(upset_plot) / patchwork::wrap_elements(features_barplot
 
 ```
 
+# Cell viability figure
+
+```{r}
+process_data |> 
+  drop_na(viability) |> 
+  mutate(vessel = paste0("Vessel ", vessel)) |>
+  mutate(run = paste0("Run ", run)) |>
+  ggplot(aes(x = day, y = viability)) +
+  facet_wrap(~ run + vessel) +
+  geom_point() +
+  geom_line() +
+  labs(
+    x = "Day",
+    y = "Cell viability (%)"
+  ) +
+  theme_catapult() -> viability_plot
+
+viability_plot
+
+ggsave("00_data/figs/cell_viability_plot.png", plot = viability_plot, width = 200, height = 180, units = "mm", dpi = 600)
+
+```
+
+```{r}
+# correlation between viability and day
+process_data |> 
+  drop_na(viability) |> 
+  ggplot(aes(x = day, y = viability)) +
+  facet_wrap(~ run) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(
+    x = "Day",
+    y = "Cell viability (%)"
+  ) +
+  theme_catapult() -> viability_correlation_plot
+
+viability_correlation_plot
+```
+
+```{r}
+# calculate correlation between viability and day
+process_data |> 
+  drop_na(viability) |> 
+  group_by(run) |> 
+  summarise(correlation = cor(day, viability, method = "pearson")) |> 
+  ungroup()
+```
+
 # Clustering figure
 
 ## mixKernel
